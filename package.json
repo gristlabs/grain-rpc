@@ -1,0 +1,55 @@
+{
+  "name": "ts-rpc",
+  "version": "0.1.0",
+  "description": "Typed RPC interface on top of an arbitrary communication channel",
+  "main": "dist/index",
+  "typings": "dist/index",
+  "scripts": {
+    "build": "tsc",
+    "watch": "tsc -w",
+    "test": "tsc && nyc mocha -R list test/",
+    "preversion": "npm test",
+    "version": "npm run build && git add dist/"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gristlabs/ts-interface-checker.git"
+  },
+  "keywords": [
+    "rpc",
+    "typescript",
+    "communication",
+    "channel"
+  ],
+  "author": "Dmitry S, Grist Labs",
+  "license": "Apache-2.0",
+  "bugs": {
+    "url": "https://github.com/gristlabs/ts-rpc/issues"
+  },
+  "homepage": "https://github.com/gristlabs/ts-rpc#readme",
+  "files": [
+    "dist"
+  ],
+  "nyc": {
+    "extension": [
+      ".ts"
+    ],
+    "exclude": [
+      "**/*.d.ts"
+    ]
+  },
+  "dependencies": {
+    "ts-interface-checker": "^0.1.1"
+  },
+  "devDependencies": {
+    "@types/chai": "^4.0.8",
+    "@types/mocha": "^2.2.44",
+    "@types/node": "^8.0.57",
+    "chai": "^4.1.2",
+    "coveralls": "^3.0.0",
+    "mocha": "^3.5.3",
+    "nyc": "^11.4.1",
+    "ts-node": "^4.0.1",
+    "typescript": "^2.6.2"
+  }
+}
