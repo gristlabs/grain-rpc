@@ -39,6 +39,7 @@
     ]
   },
   "dependencies": {
+    "events": "^1.1.1",
     "ts-interface-checker": "^0.1.1"
   },
   "devDependencies": {
