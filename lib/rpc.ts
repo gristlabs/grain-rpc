@@ -160,7 +160,7 @@ export class Rpc extends EventEmitter {
       // TODO Test, then explain how this works.
       return new Proxy({}, {
         get: (target, property: string, receiver) => {
-          return (...args: any[]) => this._makeCall.bind(this, name, property, args, anyChecker);
+          return (...args: any[]) => this._makeCall(name, property, args, anyChecker);
         },
       });
     } else {

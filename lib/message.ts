@@ -6,7 +6,7 @@
  * or their types changed. Really, the only reasonable enhancement is adding a new optional field.
  */
 
-enum MsgType {
+export enum MsgType {
   // Warning: Do NOT renumber enums (see warning above).
   RpcCall = 1,
   RpcRespData = 2,
@@ -15,7 +15,7 @@ enum MsgType {
 }
 
 // Message describing an RPC call.
-interface MsgRpcCall {
+export interface IMsgRpcCall {
   // Warning: Do NOT change fields (see warning above).
   mtype: MsgType.RpcCall;
   reqId?: number;       // Omitted when the method should not return a response.
@@ -25,7 +25,7 @@ interface MsgRpcCall {
 }
 
 // Message describing an RPC successful response.
-interface MsgRpcRespData {
+export interface IMsgRpcRespData {
   // Warning: Do NOT change fields (see warning above).
   mtype: MsgType.RpcRespData;
   reqId: number;
@@ -33,7 +33,7 @@ interface MsgRpcRespData {
 }
 
 // Message describing an RPC error response.
-interface MsgRpcRespErr {
+export interface IMsgRpcRespErr {
   // Warning: Do NOT change fields (see warning above).
   mtype: MsgType.RpcRespErr;
   reqId: number;
@@ -42,14 +42,13 @@ interface MsgRpcRespErr {
 }
 
 // Message describing a non-RPC message.
-interface MsgCustom {
+export interface IMsgCustom {
   mtype: MsgType.Custom;
   data: any;
 }
 
 // Type of all RPC messages.
-export type MsgRpc = MsgRpcCall | MsgRpcRespData | MsgRpcRespErr;
+export type IMsgRpc = IMsgRpcCall | IMsgRpcRespData | IMsgRpcRespErr;
 
 // Type for any message that may be sent over an RpcChannel.
-export type Message = MsgRpc | MsgCustom;
-
+export type IMessage = IMsgRpc | IMsgCustom;
