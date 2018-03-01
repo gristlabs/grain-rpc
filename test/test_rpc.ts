@@ -40,4 +40,29 @@ describe("ts-rpc", () => {
     assert.equal(await stub.getGreeting("World"), "Hello, World!");
   });
 
+  it("should support rpc channeling ", async () => {
+    const [abRpc, bRpc] = createRpcPair();
+    const [acRpc, cRpc] = createRpcPair();
+    abRpc.pipe("b2c", acRpc);
+    const b2cRpc = cRpc.pipe("b2c");
+    const c2bRpc = bRpc.pipe("b2c");
+    await assertHelloWorld(abRpc, bRpc);
+    await assertHelloWorld(acRpc, cRpc);
+    await assertHelloWorld(b2cRpc, c2bRpc);
+  });
+
 });
+
+async function assertHelloWorld(aRpc: Rpc, bRpc: Rpc) {
+  aRpc.registerImpl("my-greeting", new MyGreeting());
+  const stub = bRpc.getStub<IGreet>("my-greeting");
+  assert.equal(await stub.getGreeting("World"), "Hello, World!");
+}
+
+function createRpcPair(): [Rpc, Rpc] {
+  const aRpc = new Rpc();
+  const bRpc = new Rpc();
+  aRpc.start((msg) => bRpc.receiveMessage(msg));
+  bRpc.start((msg) => aRpc.receiveMessage(msg));
+  return [aRpc, bRpc];
+}

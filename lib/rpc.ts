@@ -65,6 +65,7 @@ export class Rpc extends EventEmitter {
   private _implMap: {[name: string]: Implementation} = {};
   private _pendingCalls: Map<number, ICallObj> = new Map();
   private _nextRequestId = 1;
+  private _pipes: {[name: string]: Rpc} = {};
 
   /**
    * To use Rpc, you must call start() with a function that sends a message to the other side. If
@@ -193,6 +194,53 @@ export class Rpc extends EventEmitter {
     return this._makeCall(name, "invoke", args, anyChecker);
   }
 
+  public pipe(name: string, rpc?: Rpc): Rpc {
+    if (rpc) {
+      this._pipe(name, rpc);
+    } else {
+      return this._createPipeEndpoint(name);
+    }
+    return rpc;
+  }
+
+  // // todo: just make _sendMessage public
+  public sendMessage(msg: IMessage): PromiseLike<void> | void {
+    return this._sendMessage(msg);
+  }
+
+  private _pipe(name: string, rpc: Rpc) {
+    if (this._pipes.hasOwnProperty(name)) {
+      // if already set just return
+      if (this._pipes[name] !== rpc) {
+        throw new Error(`pipe ${name} already set`);
+      }
+    } else {
+      this._pipes[name] = rpc;
+      // do the same on the other rpc
+      rpc.pipe(name, this);
+    }
+  }
+
+  private _createPipeEndpoint(name: string): Rpc {
+    const rpc = new Rpc();
+    rpc.start((msg) => {
+      if (!msg.mpipes) {
+        msg.mpipes = [];
+      }
+      if (msg.mpipes.length && msg.mpipes[msg.mpipes.length - 1] === name) {
+        msg.mpipes.pop();
+        rpc.receiveMessage(msg);
+        return;
+      }
+      msg.mpipes.push(name);
+      this._sendMessage(msg);
+    });
+
+    // register pipes to route its messages on reception
+    this._pipes[name] = rpc;
+    return rpc;
+  }
+
   private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker): Promise<any> {
     return new Promise((resolve, reject) => {
       const reqId = this._nextRequestId++;
@@ -211,6 +259,16 @@ export class Rpc extends EventEmitter {
   }
 
   private _dispatch(msg: IMessage): void {
+
+    if (msg.mpipes && msg.mpipes.length) {
+      const pipe = msg.mpipes[msg.mpipes.length - 1];
+      if (this._pipes.hasOwnProperty(pipe)) {
+        this._pipes[pipe].sendMessage(msg);
+        return;
+      }
+      msg.mpipes.pop();
+    }
+
     switch (msg.mtype) {
       case MsgType.RpcCall: { this._onMessageCall(msg); return; }
       case MsgType.RpcRespData:

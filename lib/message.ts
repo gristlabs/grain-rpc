@@ -18,6 +18,7 @@ export enum MsgType {
 export interface IMsgRpcCall {
   // Warning: Do NOT change fields (see warning above).
   mtype: MsgType.RpcCall;
+  mpipes?: string[];
   reqId?: number;       // Omitted when the method should not return a response.
   iface: string;
   meth: string;
@@ -28,6 +29,7 @@ export interface IMsgRpcCall {
 export interface IMsgRpcRespData {
   // Warning: Do NOT change fields (see warning above).
   mtype: MsgType.RpcRespData;
+  mpipes?: string[];
   reqId: number;
   data?: any;
 }
@@ -36,6 +38,7 @@ export interface IMsgRpcRespData {
 export interface IMsgRpcRespErr {
   // Warning: Do NOT change fields (see warning above).
   mtype: MsgType.RpcRespErr;
+  mpipes?: string[];
   reqId: number;
   mesg: string;
   code?: string;
@@ -44,6 +47,7 @@ export interface IMsgRpcRespErr {
 // Message describing a non-RPC message.
 export interface IMsgCustom {
   mtype: MsgType.Custom;
+  mpipes?: string[];
   data: any;
 }
 
