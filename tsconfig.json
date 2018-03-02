@@ -9,6 +9,7 @@
     "declaration": true
   },
   "include": [
-    "lib/*.ts"
+    "lib/*.ts",
+    "test/*.ts"
   ]
 }
