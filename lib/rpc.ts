@@ -45,6 +45,13 @@
  * stubs or for a particular one. If a response to a call does not arrive within the timeout, the
  * call gets rejected, and the rejection Error will have a "code" property set to "TIMEOUT".
  *
+ * Pipes
+ * -----
+ * TODO (More tests and improve documentation)
+ * Pipes allows to create an rpc channel over several rpc channels. A common usage example, would be
+ * when one endpoints (A) have two rpc channels with two endpoint (B) and (C), it makes it possible
+ * to create rpc between (B) and (C).
+ *
  * TODO We may want to support progress callbacks, perhaps by supporting arbitrary callbacks as
  * parameters. (Could be implemented by allowing "meth" to be [reqId, paramPath]) It would be nice
  * to allow the channel to report progress too, e.g. to report progress of uploading large files.
@@ -59,13 +66,20 @@ import {IMessage, IMsgCustom, IMsgRpcCall, IMsgRpcRespData, IMsgRpcRespErr, MsgT
 export type SendMessageCB = (msg: IMessage) => PromiseLike<void> | void;
 
 export class Rpc extends EventEmitter {
+
+  // todo adds documentation
+  public static pipe(name: string, aRpc: Rpc, bRpc: Rpc) {
+    aRpc.pipeToFunction(name, (msg: IMessage) => bRpc.sendMessage(msg));
+    bRpc.pipeToFunction(name, (msg: IMessage) => aRpc.sendMessage(msg));
+  }
+
   private _sendMessage: SendMessageCB;
   private _inactiveQueue: IMessage[] | null;
   private _logger: IRpcLogger;
   private _implMap: {[name: string]: Implementation} = {};
   private _pendingCalls: Map<number, ICallObj> = new Map();
   private _nextRequestId = 1;
-  private _pipes: {[name: string]: Rpc} = {};
+  private _pipes: {[name: string]: (msg: IMessage, pipes: string[]) => PromiseLike<void> | void} = {};
 
   /**
    * To use Rpc, you must call start() with a function that sends a message to the other side. If
@@ -194,51 +208,38 @@ export class Rpc extends EventEmitter {
     return this._makeCall(name, "invoke", args, anyChecker);
   }
 
-  public pipe(name: string, rpc?: Rpc): Rpc {
-    if (rpc) {
-      this._pipe(name, rpc);
+  /**
+   *
+   */
+   // todo: adds documentation
+  public pipeToFunction(name: string, cb: (msg: IMessage) => void) {
+    if (this._pipes.hasOwnProperty(name)) {
+      throw new Error(`pipe ${name} already set`);
     } else {
-      return this._createPipeEndpoint(name);
+      this._pipes[name] = cb;
     }
+  }
+
+  // todo: adds documentation
+  public pipeEndpoint(name: string): Rpc {
+    const rpc = new Rpc({sendMessage: (msg) => {
+      if (!msg.mpipes) {
+        msg.mpipes = [];
+      }
+      msg.mpipes.push(name);
+      this._sendMessage(msg);
+    }});
+    // register pipes to route its messages on reception
+    this._pipes[name] = (msg: IMessage, pipes) => {
+      pipes.pop();
+      rpc.receiveMessage(msg);
+    };
     return rpc;
   }
 
   // // todo: just make _sendMessage public
   public sendMessage(msg: IMessage): PromiseLike<void> | void {
     return this._sendMessage(msg);
-  }
-
-  private _pipe(name: string, rpc: Rpc) {
-    if (this._pipes.hasOwnProperty(name)) {
-      // if already set just return
-      if (this._pipes[name] !== rpc) {
-        throw new Error(`pipe ${name} already set`);
-      }
-    } else {
-      this._pipes[name] = rpc;
-      // do the same on the other rpc
-      rpc.pipe(name, this);
-    }
-  }
-
-  private _createPipeEndpoint(name: string): Rpc {
-    const rpc = new Rpc();
-    rpc.start((msg) => {
-      if (!msg.mpipes) {
-        msg.mpipes = [];
-      }
-      if (msg.mpipes.length && msg.mpipes[msg.mpipes.length - 1] === name) {
-        msg.mpipes.pop();
-        rpc.receiveMessage(msg);
-        return;
-      }
-      msg.mpipes.push(name);
-      this._sendMessage(msg);
-    });
-
-    // register pipes to route its messages on reception
-    this._pipes[name] = rpc;
-    return rpc;
   }
 
   private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker): Promise<any> {
@@ -263,7 +264,7 @@ export class Rpc extends EventEmitter {
     if (msg.mpipes && msg.mpipes.length) {
       const pipe = msg.mpipes[msg.mpipes.length - 1];
       if (this._pipes.hasOwnProperty(pipe)) {
-        this._pipes[pipe].sendMessage(msg);
+        this._pipes[pipe](msg, msg.mpipes);
         return;
       }
       msg.mpipes.pop();

@@ -40,16 +40,18 @@ describe("ts-rpc", () => {
     assert.equal(await stub.getGreeting("World"), "Hello, World!");
   });
 
-  it("should support rpc channeling ", async () => {
+  it("should support rpc pipes ", async () => {
     const [abRpc, bRpc] = createRpcPair();
     const [acRpc, cRpc] = createRpcPair();
-    abRpc.pipe("b2c", acRpc);
-    const b2cRpc = cRpc.pipe("b2c");
-    const c2bRpc = bRpc.pipe("b2c");
+    Rpc.pipe("b2c", abRpc, acRpc);
+    const b2cRpc = cRpc.pipeEndpoint("b2c");
+    const c2bRpc = bRpc.pipeEndpoint("b2c");
     await assertHelloWorld(abRpc, bRpc);
     await assertHelloWorld(acRpc, cRpc);
     await assertHelloWorld(b2cRpc, c2bRpc);
   });
+
+  // todo: test more complex pipes
 
 });
 
