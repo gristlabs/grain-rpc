@@ -47,10 +47,9 @@
  *
  * Pipes
  * -----
- * TODO (More tests and improve documentation)
- * Pipes allows to create an rpc channel over several rpc channels. A common usage example, would be
- * when one endpoints (A) have two rpc channels with two endpoint (B) and (C), it makes it possible
- * to create rpc between (B) and (C).
+ * Pipes allow to create rpc channels over several others rpc channels. In a common usage example,
+ * an endpoint (A) has two rpc channels connected to two endpoint (B) and (C), Rpc pipes make it
+ * possible to create an rpc between (B) and (C) with all messages going through (A).
  *
  * TODO We may want to support progress callbacks, perhaps by supporting arbitrary callbacks as
  * parameters. (Could be implemented by allowing "meth" to be [reqId, paramPath]) It would be nice
@@ -67,20 +66,32 @@ export type SendMessageCB = (msg: IMessage) => PromiseLike<void> | void;
 
 export class Rpc extends EventEmitter {
 
-  // todo adds documentation
+  /**
+   * Forward all messages piped under `name` from on rpc to the other one and vise versa.
+   */
   public static pipe(name: string, aRpc: Rpc, bRpc: Rpc) {
     aRpc.pipeToFunction(name, (msg: IMessage) => bRpc.sendMessage(msg));
     bRpc.pipeToFunction(name, (msg: IMessage) => aRpc.sendMessage(msg));
   }
 
+  /**
+   * Creates an Rpc instance which will pipe all its messages under `name` over the same channel as
+   * the provided `rpc` without interferring. On the other side of the channel, to forward the piped
+   * messages from the rpc which is received the messages to another rpc for send over another
+   * channel, use `Rpc.pipe` with the same name and both rpcs. Or, to have an rpc instance to handle
+   * the messages call `Rpc.pipeEndpoint` instead with the same name and the rpc receiving messages.
+   *
+   * note: start() has already been called on the returned instance.
+   */
   public static pipeEndpoint(name: string, rpc: Rpc): Rpc {
-    const endpoint = new Rpc({sendMessage: (msg) => {
+    const endpoint = new Rpc();
+    endpoint.start((msg) => {
       if (!msg.mpipes) {
         msg.mpipes = [];
       }
       msg.mpipes.push(name);
       rpc.sendMessage(msg);
-    }});
+    });
     // register pipes to route its messages on reception
     rpc.pipeToFunction(name, (msg: IMessage) => {
       if (!msg.mpipes) {
@@ -94,7 +105,6 @@ export class Rpc extends EventEmitter {
 
   public sendMessage: SendMessageCB;
 
-  // todo: remove should use this.sendMessage instead
   private _inactiveQueue: IMessage[] | null;
   private _logger: IRpcLogger;
   private _implMap: {[name: string]: Implementation} = {};
@@ -237,9 +247,10 @@ export class Rpc extends EventEmitter {
   }
 
   /**
-   *
+   * Redirect all the in-coming message sent from a pipe endpoint with the same name to the
+   * callback. Most of the time you will not use `pipeToFunction` directly but `Rpc.pipe` or
+   * `Rpc.pipeEndpoint` instead.
    */
-   // todo: adds documentation
   public pipeToFunction(name: string, cb: (msg: IMessage) => void) {
     if (this._pipes.hasOwnProperty(name)) {
       throw new Error(`pipe ${name} already set`);

@@ -42,36 +42,37 @@ describe("ts-rpc", () => {
 
   describe("pipe", () => {
 
-    function pipeEndpointsThrough(a: IEndpoint, b: IEndpoint, {through: c}: {through: IEndpoint}) {
-      const a2b = a.name + "2" + b.name;
-      Rpc.pipe(a2b, c.to[a.name], c.to[b.name]);
-      a.to[b.name] = Rpc.pipeEndpoint(a2b, b.to[c.name]);
-      b.to[a.name] = Rpc.pipeEndpoint(a2b, a.to[c.name]);
-    }
-
     const A: IEndpoint = {name: "a", to: {}};
     const B: IEndpoint = {name: "b", to: {}};
     const C: IEndpoint = {name: "c", to: {}};
+    const D: IEndpoint = {name: "d", to: {}};
+    const linkedEndpoints: IEndpoint[][] = [];
 
-    linkEndpoints(A, B);
-    linkEndpoints(A, C);
+    for (const [a, b] of [[A, B], [A, C], [D, B]]) {
+      linkEndpoints(a, b);
+    }
+
     pipeEndpointsThrough(B, C, {through: A});
+    pipeEndpointsThrough(D, C, {through: B});
 
-    describe("(B) to (C) through (A)", () => {
-      shouldBeValid(B, C);
-      shouldNotBreak([A, C], [A, B]);
+    describe("should create valid rpcs", () => {
+      for (const [a, b] of linkedEndpoints) {
+        describe(`${formatEndpoints(a, b)} should be valid`, () => basicTests(a, b));
+      }
     });
 
-    describe("more complex pipes: (D) to (C) though (B)", () => {
+    function pipeEndpointsThrough(a: IEndpoint, b: IEndpoint, {through: c}: {through: IEndpoint}) {
+      const name = a.name + "2" + b.name;
+      Rpc.pipe(name, c.to[a.name], c.to[b.name]);
+      a.to[b.name] = Rpc.pipeEndpoint(name, b.to[c.name]);
+      b.to[a.name] = Rpc.pipeEndpoint(name, a.to[c.name]);
+      linkedEndpoints.push([a, b]);
+    }
 
-      const D: IEndpoint = {name: "d", to: {}};
-
-      linkEndpoints(D, B);
-      pipeEndpointsThrough(D, C, {through: B});
-
-      shouldBeValid(D, C);
-      shouldNotBreak([A, C], [A, B], [B, C], [B, D]);
-    });
+    function linkEndpoints(a: IEndpoint, b: IEndpoint) {
+      [a.to[b.name], b.to[a.name]] = createRpcPair();
+      linkedEndpoints.push([a, b]);
+    }
 
   });
 
@@ -92,9 +93,16 @@ function createRpcPair(): [Rpc, Rpc] {
   return [aRpc, bRpc];
 }
 
+/**
+ * basicTests includes a limited set of unit-test that are selected to check wether an rpc channel
+ * is valid. In particular, basicTests is used for testing rpc pipes and it is then used many times
+ * over differents channels piped into each other. Including all the tests, or including long tests
+ * could significantly slow down the execution time.
+ */
 function basicTests(A: IEndpoint, B: IEndpoint) {
   const aRpc = A.to[B.name];
   const bRpc = B.to[A.name];
+
   it("should support hello world", async () => {
     await assertHelloWorld(aRpc, bRpc);
   });
@@ -106,24 +114,10 @@ function basicTests(A: IEndpoint, B: IEndpoint) {
   });
 }
 
-function linkEndpoints(A: IEndpoint, B: IEndpoint) {
-  [A.to[B.name], B.to[A.name]] = createRpcPair();
-}
-
 // some test internal types
 interface IEndpoint {
   name: string;
   to: {[name: string]: Rpc};
-}
-
-function shouldBeValid(a: IEndpoint, b: IEndpoint) {
-  describe(`Should be valid ${formatEndpoints(a, b)}`, () => basicTests(a, b));
-}
-
-function shouldNotBreak(...abs: IEndpoint[][]) {
-  for (const [a, b] of abs) {
-    describe(`should not break ${formatEndpoints(a, b)}`, () => basicTests(a, b));
-  }
 }
 
 function formatEndpoints(a: IEndpoint, b: IEndpoint) {
