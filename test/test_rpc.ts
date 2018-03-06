@@ -41,39 +41,25 @@ describe("ts-rpc", () => {
   });
 
   describe("pipe", () => {
+    const [AtoB, BtoA] = createRpcPair();
+    const [AtoC, CtoA] = createRpcPair();
+    const [DtoB, BtoD] = createRpcPair();
 
-    const A: IEndpoint = {name: "a", to: {}};
-    const B: IEndpoint = {name: "b", to: {}};
-    const C: IEndpoint = {name: "c", to: {}};
-    const D: IEndpoint = {name: "d", to: {}};
-    const linkedEndpoints: IEndpoint[][] = [];
+    Rpc.pipe("b2c", AtoB, AtoC);
+    const CtoB = Rpc.pipeEndpoint("b2c", CtoA);
+    const BtoC = Rpc.pipeEndpoint("b2c", BtoA);
 
-    for (const [a, b] of [[A, B], [A, C], [D, B]]) {
-      linkEndpoints(a, b);
-    }
-
-    pipeEndpointsThrough(B, C, {through: A});
-    pipeEndpointsThrough(D, C, {through: B});
+    Rpc.pipe("d2c", BtoD, BtoC);
+    const DtoC = Rpc.pipeEndpoint("d2c", DtoB);
+    const CtoD = Rpc.pipeEndpoint("d2c", CtoB);
 
     describe("should create valid rpcs", () => {
-      for (const [a, b] of linkedEndpoints) {
-        describe(`${formatEndpoints(a, b)} should be valid`, () => basicTests(a, b));
-      }
+      describe(`A to B should be valid`, () => basicTests(AtoB, BtoA));
+      describe(`A to C should be valid`, () => basicTests(AtoC, CtoA));
+      describe(`D to B should be valid`, () => basicTests(DtoB, BtoD));
+      describe(`B to C should be valid`, () => basicTests(BtoC, CtoB));
+      describe(`D to C should be valid`, () => basicTests(DtoC, CtoD));
     });
-
-    function pipeEndpointsThrough(a: IEndpoint, b: IEndpoint, {through: c}: {through: IEndpoint}) {
-      const name = a.name + "2" + b.name;
-      Rpc.pipe(name, c.to[a.name], c.to[b.name]);
-      a.to[b.name] = Rpc.pipeEndpoint(name, b.to[c.name]);
-      b.to[a.name] = Rpc.pipeEndpoint(name, a.to[c.name]);
-      linkedEndpoints.push([a, b]);
-    }
-
-    function linkEndpoints(a: IEndpoint, b: IEndpoint) {
-      [a.to[b.name], b.to[a.name]] = createRpcPair();
-      linkedEndpoints.push([a, b]);
-    }
-
   });
 
 });
@@ -99,9 +85,7 @@ function createRpcPair(): [Rpc, Rpc] {
  * over differents channels piped into each other. Including all the tests, or including long tests
  * could significantly slow down the execution time.
  */
-function basicTests(A: IEndpoint, B: IEndpoint) {
-  const aRpc = A.to[B.name];
-  const bRpc = B.to[A.name];
+function basicTests(aRpc: Rpc, bRpc: Rpc) {
 
   it("should support hello world", async () => {
     await assertHelloWorld(aRpc, bRpc);
@@ -112,18 +96,4 @@ function basicTests(A: IEndpoint, B: IEndpoint) {
     aRpc.registerFunc("foo", async (name: string) => `Yo ${name}!`);
     assert.equal(await bRpc.callRemoteFunc("foo", "Santa"), "Yo Santa!");
   });
-}
-
-// some test internal types
-interface IEndpoint {
-  name: string;
-  to: {[name: string]: Rpc};
-}
-
-function formatEndpoints(a: IEndpoint, b: IEndpoint) {
-  return `${formatEndpoint(a)} to ${formatEndpoint(b)}`;
-}
-
-function formatEndpoint(a: IEndpoint): string {
-  return `(${a.name.toUpperCase()})`;
 }
