@@ -45,11 +45,12 @@
  * stubs or for a particular one. If a response to a call does not arrive within the timeout, the
  * call gets rejected, and the rejection Error will have a "code" property set to "TIMEOUT".
  *
- * Pipes
- * -----
- * Pipes allow to create rpc channels over several others rpc channels. In a common usage example,
- * an endpoint (A) has two rpc channels connected to two endpoint (B) and (C), Rpc pipes make it
- * possible to create an rpc between (B) and (C) with all messages going through (A).
+ * Forwarding
+ * ----------
+ * Rpc.registerForwarder() method allows one Rpc object to forward all calls to interfaces with a
+ * given prefix to a different Rpc object. The intended usage is when Rpc connects A to B, and B
+ * to C. Then B can use registerForwarder to expose A's interfaces to C (or C's to A) without
+ * having to know what exactly they are.
  *
  * TODO We may want to support progress callbacks, perhaps by supporting arbitrary callbacks as
  * parameters. (Could be implemented by allowing "meth" to be [reqId, paramPath]) It would be nice
@@ -68,8 +69,8 @@ export class Rpc extends EventEmitter {
   private _sendMessage: SendMessageCB;
   private _inactiveQueue: IMessage[] | null;
   private _logger: IRpcLogger;
-  private _implMap: Map<string, Implementation> = new Map();
-  private _prefixMap: Map<string, Implementation> = new Map();
+  private _implMap: {[name: string]: Implementation} = {};
+  private _prefixList: Implementation[] = [];
   private _pendingCalls: Map<number, ICallObj> = new Map();
   private _nextRequestId = 1;
 
@@ -128,12 +129,12 @@ export class Rpc extends EventEmitter {
   public registerImpl<Iface extends any>(name: string, impl: any): void;
   public registerImpl<Iface>(name: string, impl: Iface, checker: tic.Checker): void;
   public registerImpl(name: string, impl: any, checker?: tic.Checker): void {
-    if (this._implMap.has(name)) {
+    if (this._implMap.hasOwnProperty(name)) {
       throw new Error(`Rpc.registerImpl has already been called for ${name}`);
     }
-    const invokeImpl = async (call: IMsgRpcCall) => impl[call.meth](...call.args);
+    const invokeImpl = (call: IMsgRpcCall) => impl[call.meth](...call.args);
     if (!checker) {
-      this._implMap.set(name, {name, invokeImpl, argsCheckers: null});
+      this._implMap[name] = {name, invokeImpl, argsCheckers: null};
     } else {
       const ttype = getType(checker);
       if (!(ttype instanceof tic.TIface)) {
@@ -145,26 +146,23 @@ export class Rpc extends EventEmitter {
           argsCheckers[prop.name] = checker.methodArgs(prop.name);
         }
       }
-      this._implMap.set(name, {name, invokeImpl, argsCheckers});
+      this._implMap[name] = {name, invokeImpl, argsCheckers};
     }
   }
 
   public registerForwarder(srcPrefix: string, destPrefix: string, destRpc: Rpc): void {
-    if (!srcPrefix.endsWith(".")) {
-      throw new Error("Rpc.registerForwarders requires a prefix that ends in period (.)");
-    }
     const invokeImpl = (call: IMsgRpcCall) => {
       const iface = destPrefix + call.iface.slice(srcPrefix.length);
       return destRpc._makeCall(iface, call.meth, call.args, anyChecker);
     };
-    this._prefixMap.set(srcPrefix.slice(0, -1), {name: srcPrefix, invokeImpl, argsCheckers: null});
+    this._prefixList.push({name: srcPrefix, invokeImpl, argsCheckers: null});
   }
 
   /**
    * Unregister an implementation, if one was registered with this name.
    */
   public unregisterImpl(name: string): void {
-    this._implMap.delete(name);
+    delete this._implMap[name];
   }
 
   /**
@@ -206,7 +204,7 @@ export class Rpc extends EventEmitter {
   }
 
   /**
-   * Unregister a afunction, if one was registered with this name.
+   * Unregister a function, if one was registered with this name.
    */
   public unregisterFunc(name: string): void {
     return this.unregisterImpl(name);
@@ -246,15 +244,15 @@ export class Rpc extends EventEmitter {
   }
 
   private async _onMessageCall(call: IMsgRpcCall): Promise<void> {
-    let impl = this._implMap.get(call.iface);
-    if (!impl) {
-      const prefix = getPrefix(call.iface);
-      if (prefix) {
-        impl = this._prefixMap.get(prefix);
+    let impl: Implementation|undefined;
+    if (this._implMap.hasOwnProperty(call.iface)) {
+      impl = this._implMap[call.iface];
+    } else {
+      // Note that this relies on _prefixMap maintaining entries in insertion order.
+      impl = this._prefixList.find((_impl) => call.iface.startsWith(_impl.name));
+      if (!impl) {
+        return this._failCall(call, "RPC_UNKNOWN_INTERFACE", `Unknown interface ${call.iface}`);
       }
-    }
-    if (!impl) {
-      return this._failCall(call, "RPC_UNKNOWN_INTERFACE", `Unknown interface ${call.iface}`);
     }
 
     if (!impl.argsCheckers) {
@@ -396,9 +394,4 @@ const anyChecker: tic.Checker = checkerAnyResult;
 // TODO Hack: expose this in ts-interface-checker
 function getType(checker: tic.Checker): tic.TType {
   return (checker as any).ttype;
-}
-
-function getPrefix(str: string): string|null {
-  const pos = str.indexOf(".");
-  return pos === -1 ? null : str.slice(0, pos);
 }
