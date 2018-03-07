@@ -16,7 +16,8 @@ interface IGreet {
 }
 
 class MyGreeting implements IGreet {
-  public async getGreeting(name: string): Promise<string> { return `Hello, ${name}!`; }
+  constructor(private suffix: string = "") {}
+  public async getGreeting(name: string): Promise<string> { return `Hello, ${name}!${this.suffix}`; }
 }
 
 describe("ts-rpc", () => {
@@ -40,4 +41,44 @@ describe("ts-rpc", () => {
     assert.equal(await stub.getGreeting("World"), "Hello, World!");
   });
 
+  it("should support forwarding calls", async () => {
+    const [AtoB, BtoA] = createRpcPair();
+    const [AtoC, CtoA] = createRpcPair();
+    const [DtoB, BtoD] = createRpcPair();
+
+    // In the naming of the Rpc objects, think the first letter as the entity that maintains this
+    // Rpc object, and the second letter as Rpc's other endpoint. Then we have this topology:
+    //             |BtoA| <--> |AtoB|
+    //             |    |      |AtoC| <--> |CtoA|
+    // |DtoB| <--> |BtoD|
+
+    // Allow C to call to B by calling A with "foo." prefix.
+    AtoC.registerForwarder("foo.", "", AtoB);
+
+    // Allow D to call to C via B and A with "bar." prefix.
+    BtoD.registerForwarder("bar.", "bar.", BtoA);
+    AtoB.registerForwarder("bar.", "", AtoC);
+
+    BtoA.registerImpl("my-greeting", new MyGreeting(" [from B]"));
+    BtoA.registerFunc("func", async (name: string) => `Yo ${name} [from B]`);
+
+    CtoA.registerImpl("my-greeting", new MyGreeting(" [from C]"));
+    CtoA.registerFunc("func", async (name: string) => `Yo ${name} [from C]`);
+
+    assert.equal(await AtoB.getStub<IGreet>("my-greeting").getGreeting("World"), "Hello, World! [from B]");
+    assert.equal(await CtoA.getStub<IGreet>("foo.my-greeting").getGreeting("World"), "Hello, World! [from B]");
+    assert.equal(await AtoB.callRemoteFunc("func", "Santa"), "Yo Santa [from B]");
+    assert.equal(await CtoA.callRemoteFunc("foo.func", "Santa"), "Yo Santa [from B]");
+
+    assert.equal(await AtoC.getStub<IGreet>("my-greeting").getGreeting("World"), "Hello, World! [from C]");
+    assert.equal(await DtoB.getStub<IGreet>("bar.my-greeting").getGreeting("World"), "Hello, World! [from C]");
+    assert.equal(await AtoC.callRemoteFunc("func", "Santa"), "Yo Santa [from C]");
+    assert.equal(await DtoB.callRemoteFunc("bar.func", "Santa"), "Yo Santa [from C]");
+  });
 });
+
+function createRpcPair(): [Rpc, Rpc] {
+  const aRpc: Rpc = new Rpc({sendMessage: (msg) => bRpc.receiveMessage(msg)});
+  const bRpc: Rpc = new Rpc({sendMessage: (msg) => aRpc.receiveMessage(msg)});
+  return [aRpc, bRpc];
+}
