@@ -58,9 +58,19 @@ import {IMessage, IMsgCustom, IMsgRpcCall, IMsgRpcRespData, IMsgRpcRespErr, MsgT
 
 export type SendMessageCB = (msg: IMessage) => PromiseLike<void> | void;
 
+/**
+ *
+ * A message, and a specific callback to use to reply to it.
+ *
+ */
+export interface IMessageWithOrigin {
+  msg: IMessage;
+  replyCB?: SendMessageCB;
+}
+
 export class Rpc extends EventEmitter {
   private _sendMessage: SendMessageCB;
-  private _inactiveQueue: IMessage[] | null;
+  private _inactiveQueue: IMessageWithOrigin[] | null;
   private _logger: IRpcLogger;
   private _implMap: {[name: string]: Implementation} = {};
   private _pendingCalls: Map<number, ICallObj> = new Map();
@@ -81,12 +91,14 @@ export class Rpc extends EventEmitter {
 
   /**
    * To use Rpc, call this for every message received from the other side of the channel.
+   * Optionally, you can provide a callback for a reply to this specific message.
    */
-  public receiveMessage(msg: any): void {
+  public receiveMessage(msg: any, replyCB?: SendMessageCB): void {
+    const msgWithOrigin: IMessageWithOrigin = {msg, replyCB};
     if (this._inactiveQueue) {
-      this._inactiveQueue.push(msg);
+      this._inactiveQueue.push(msgWithOrigin);
     } else {
-      this._dispatch(msg);
+      this._dispatch(msgWithOrigin);
     }
   }
 
@@ -210,18 +222,20 @@ export class Rpc extends EventEmitter {
     });
   }
 
-  private _dispatch(msg: IMessage): void {
-    switch (msg.mtype) {
-      case MsgType.RpcCall: { this._onMessageCall(msg); return; }
+  private _dispatch(msgWithOrigin: IMessageWithOrigin): void {
+    switch (msgWithOrigin.msg.mtype) {
+      case MsgType.RpcCall:
+        this._onMessageCall(msgWithOrigin.msg, msgWithOrigin.replyCB);
+        return;
       case MsgType.RpcRespData:
-      case MsgType.RpcRespErr: { this._onMessageResp(msg); return; }
-      case MsgType.Custom: { this.emit("message", msg.data); return; }
+      case MsgType.RpcRespErr: { this._onMessageResp(msgWithOrigin.msg); return; }
+      case MsgType.Custom: { this.emit("message", msgWithOrigin.msg.data); return; }
     }
   }
 
-  private async _onMessageCall(call: IMsgRpcCall): Promise<void> {
+  private async _onMessageCall(call: IMsgRpcCall, replyCB?: SendMessageCB): Promise<void> {
     if (!this._implMap.hasOwnProperty(call.iface)) {
-      return this._failCall(call, "RPC_UNKNOWN_INTERFACE", "Unknown interface");
+      return this._failCall(call, "RPC_UNKNOWN_INTERFACE", "Unknown interface", replyCB);
     }
 
     const impl: Implementation = this._implMap[call.iface];
@@ -230,41 +244,41 @@ export class Rpc extends EventEmitter {
     } else {
       // Check the method name and argument types.
       if (!impl.argsCheckers.hasOwnProperty(call.meth)) {
-        return this._failCall(call, "RPC_UNKNOWN_METHOD", "Unknown method");
+        return this._failCall(call, "RPC_UNKNOWN_METHOD", "Unknown method", replyCB);
       }
       const argsChecker: tic.Checker = impl.argsCheckers[call.meth];
       try {
         argsChecker.check(call.args);
       } catch (e) {
-        return this._failCall(call, "RPC_INVALID_ARGS", `Invalid args: ${e.message}`);
+        return this._failCall(call, "RPC_INVALID_ARGS", `Invalid args: ${e.message}`, replyCB);
       }
     }
 
     if (call.reqId === undefined) {
-      return this._failCall(call, "RPC_MISSING_REQID", "Missing request id");
+      return this._failCall(call, "RPC_MISSING_REQID", "Missing request id", replyCB);
     }
     this._info(call, "RPC_ONCALL");
     let result;
     try {
       result = await impl.impl[call.meth](...call.args);
     } catch (e) {
-      return this._failCall(call, e.code, e.message, "RPC_ONCALL_ERROR");
+      return this._failCall(call, e.code, e.message, replyCB, "RPC_ONCALL_ERROR");
     }
     this._info(call, "RPC_ONCALL_OK");
-    return this._sendResponse(call.reqId, result);
+    return this._sendResponse(call.reqId, result, replyCB);
   }
 
-  private async _failCall(call: IMsgRpcCall, code: string, mesg: string, reportCode?: string): Promise<void> {
+  private async _failCall(call: IMsgRpcCall, code: string, mesg: string, replyCB?: SendMessageCB, reportCode?: string): Promise<void> {
     this._warn(call, reportCode || code, mesg);
     if (call.reqId !== undefined) {
       const msg: IMsgRpcRespErr = {mtype: MsgType.RpcRespErr, reqId: call.reqId, mesg, code};
-      await this._sendMessage(msg);
+      return (replyCB || this._sendMessage)(msg);
     }
   }
 
-  private async _sendResponse(reqId: number, data: any): Promise<void> {
+  private async _sendResponse(reqId: number, data: any, replyCB?: SendMessageCB): Promise<void> {
     const msg: IMsgRpcRespData = {mtype: MsgType.RpcRespData, reqId, data};
-    await this._sendMessage(msg);
+    return (replyCB || this._sendMessage)(msg);
   }
 
   private _onMessageResp(resp: IMsgRpcRespData|IMsgRpcRespErr): void {
