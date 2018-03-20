@@ -43,6 +43,7 @@
     "ts-interface-checker": "^0.1.1"
   },
   "devDependencies": {
+    "@types/bluebird": "^3.5.20",
     "@types/chai": "^4.0.8",
     "@types/mocha": "^2.2.44",
     "@types/node": "^8.0.57",
