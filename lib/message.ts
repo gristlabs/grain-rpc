@@ -18,6 +18,7 @@ export enum MsgType {
 export interface IMsgRpcCall {
   // Warning: Do NOT change fields (see warning above).
   mtype: MsgType.RpcCall;
+  mdest?: string;       // Optional destination for forwarding calls.
   reqId?: number;       // Omitted when the method should not return a response.
   iface: string;
   meth: string;
@@ -44,6 +45,7 @@ export interface IMsgRpcRespErr {
 // Message describing a non-RPC message.
 export interface IMsgCustom {
   mtype: MsgType.Custom;
+  mdest?: string;       // Optional destination for forwarding calls.
   data: any;
 }
 

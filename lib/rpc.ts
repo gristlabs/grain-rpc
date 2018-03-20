@@ -47,10 +47,14 @@
  *
  * Forwarding
  * ----------
- * Rpc.registerForwarder() method allows one Rpc object to forward all calls to interfaces with a
- * given prefix to a different Rpc object. The intended usage is when Rpc connects A to B, and B
- * to C. Then B can use registerForwarder to expose A's interfaces to C (or C's to A) without
- * having to know what exactly they are.
+ * Rpc.registerForwarder() along with methods with "-Forward" suffix allow one Rpc object to
+ * forward calls and messages to another Rpc object. The intended usage is when Rpc connects A to
+ * B, and B to C. Then B can use registerForwarder to expose A's interfaces to C (or C's to A)
+ * without having to know what exactly they are.
+ *
+ * E.g. with A.registerImpl("A-name", ...) and B.registerForwarder("b2a", A), we may now call
+ * C.getStubForward("b2a", "A-name") to get a stub that will forward calls to A, as well as
+ * C.postMessageForward("b2a", msg) to have the message received by A.
  *
  * TODO We may want to support progress callbacks, perhaps by supporting arbitrary callbacks as
  * parameters. (Could be implemented by allowing "meth" to be [reqId, paramPath]) It would be nice
@@ -69,8 +73,8 @@ export class Rpc extends EventEmitter {
   private _sendMessage: SendMessageCB;
   private _inactiveQueue: IMessage[] | null;
   private _logger: IRpcLogger;
-  private _implMap: {[name: string]: Implementation} = {};
-  private _prefixList: Implementation[] = [];
+  private _implMap: Map<string, Implementation> = new Map();
+  private _forwarders: Map<string, ImplementationFwd> = new Map();
   private _pendingCalls: Map<number, ICallObj> = new Map();
   private _nextRequestId = 1;
 
@@ -116,8 +120,11 @@ export class Rpc extends EventEmitter {
   /**
    * Messaging interface: send data to the other side, to be emitted there as a "message" event.
    */
-  public async postMessage(data: any): Promise<void> {
+  public postMessage(data: any): Promise<void> { return this.postMessageForward("", data); }
+
+  public async postMessageForward(fwdDest: string, data: any): Promise<void> {
     const msg: IMsgCustom = {mtype: MsgType.Custom, data};
+    if (fwdDest) { msg.mdest = fwdDest; }
     await this._sendMessage(msg);
   }
 
@@ -129,12 +136,12 @@ export class Rpc extends EventEmitter {
   public registerImpl<Iface extends any>(name: string, impl: any): void;
   public registerImpl<Iface>(name: string, impl: Iface, checker: tic.Checker): void;
   public registerImpl(name: string, impl: any, checker?: tic.Checker): void {
-    if (this._implMap.hasOwnProperty(name)) {
+    if (this._implMap.has(name)) {
       throw new Error(`Rpc.registerImpl has already been called for ${name}`);
     }
     const invokeImpl = (call: IMsgRpcCall) => impl[call.meth](...call.args);
     if (!checker) {
-      this._implMap[name] = {name, invokeImpl, argsCheckers: null};
+      this._implMap.set(name, {name, invokeImpl, argsCheckers: null});
     } else {
       const ttype = getType(checker);
       if (!(ttype instanceof tic.TIface)) {
@@ -146,23 +153,24 @@ export class Rpc extends EventEmitter {
           argsCheckers[prop.name] = checker.methodArgs(prop.name);
         }
       }
-      this._implMap[name] = {name, invokeImpl, argsCheckers};
+      this._implMap.set(name, {name, invokeImpl, argsCheckers});
     }
   }
 
-  public registerForwarder(srcPrefix: string, destPrefix: string, destRpc: Rpc): void {
-    const invokeImpl = (call: IMsgRpcCall) => {
-      const iface = destPrefix + call.iface.slice(srcPrefix.length);
-      return destRpc._makeCall(iface, call.meth, call.args, anyChecker);
-    };
-    this._prefixList.push({name: srcPrefix, invokeImpl, argsCheckers: null});
+  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest: string = ""): void {
+    this._forwarders.set(fwdName, {
+      name: "[FWD]" + fwdName,
+      argsCheckers: null,
+      invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker, fwdDest),
+      forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(fwdDest, msg.data),
+    });
   }
 
   /**
    * Unregister an implementation, if one was registered with this name.
    */
   public unregisterImpl(name: string): void {
-    delete this._implMap[name];
+    this._implMap.delete(name);
   }
 
   /**
@@ -173,11 +181,17 @@ export class Rpc extends EventEmitter {
   public getStub<Iface extends any>(name: string): any;
   public getStub<Iface>(name: string, checker: tic.Checker): Iface;
   public getStub(name: string, checker?: tic.Checker): any {
+    return this.getStubForward("", name, checker!);
+  }
+
+  public getStubForward<Iface extends any>(fwdDest: string, name: string): any;
+  public getStubForward<Iface>(fwdDest: string, name: string, checker: tic.Checker): Iface;
+  public getStubForward(fwdDest: string, name: string, checker?: tic.Checker): any {
     if (!checker) {
       // TODO Test, then explain how this works.
       return new Proxy({}, {
         get: (target, property: string, receiver) => {
-          return (...args: any[]) => this._makeCall(name, property, args, anyChecker);
+          return (...args: any[]) => this._makeCall(name, property, args, anyChecker, fwdDest);
         },
       });
     } else {
@@ -189,7 +203,7 @@ export class Rpc extends EventEmitter {
       for (const prop of ttype.props) {
         if (prop.ttype instanceof tic.TFunc) {
           const resultChecker = checker.methodResult(prop.name);
-          api[prop.name] = (...args: any[]) => this._makeCall(name, prop.name, args, resultChecker);
+          api[prop.name] = (...args: any[]) => this._makeCall(name, prop.name, args, resultChecker, fwdDest);
         }
       }
       return api;
@@ -214,10 +228,15 @@ export class Rpc extends EventEmitter {
    * Call a remote function registered with registerFunc. Does no type checking.
    */
   public callRemoteFunc(name: string, ...args: any[]): Promise<any> {
-    return this._makeCall(name, "invoke", args, anyChecker);
+    return this.callRemoteFuncForward("", name, ...args);
   }
 
-  private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker): Promise<any> {
+  public callRemoteFuncForward(fwdDest: string, name: string, ...args: any[]): Promise<any> {
+    return this._makeCall(name, "invoke", args, anyChecker, fwdDest);
+  }
+
+  private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
+                    fwdDest: string): Promise<any> {
     return new Promise((resolve, reject) => {
       const reqId = this._nextRequestId++;
       const callObj: ICallObj = {reqId, iface, meth, resolve, reject, resultChecker};
@@ -227,6 +246,7 @@ export class Rpc extends EventEmitter {
       // succeeds, we save {resolve,reject} to resolve _makeCall when we get back a response.
       this._info(callObj, "RPC_CALLING");
       const msg: IMsgRpcCall = {mtype: MsgType.RpcCall, reqId, iface, meth, args};
+      if (fwdDest) { msg.mdest = fwdDest; }
       Promise.resolve().then(() => this._sendMessage(msg)).catch((err) => {
         this._pendingCalls.delete(reqId);
         reject(err);
@@ -239,19 +259,34 @@ export class Rpc extends EventEmitter {
       case MsgType.RpcCall: { this._onMessageCall(msg); return; }
       case MsgType.RpcRespData:
       case MsgType.RpcRespErr: { this._onMessageResp(msg); return; }
-      case MsgType.Custom: { this.emit("message", msg.data); return; }
+      case MsgType.Custom: { this._onCustomMessage(msg); return; }
+    }
+  }
+
+  private _onCustomMessage(msg: IMsgCustom): void {
+    if (msg.mdest) {
+      const impl = this._forwarders.get(msg.mdest);
+      if (!impl) {
+        this._warn(null, "RPC_UNKNOWN_FORWARD_DEST", "Unknown forward destination");
+      } else {
+        impl.forwardMessage(msg);
+      }
+    } else {
+      this.emit("message", msg.data);
     }
   }
 
   private async _onMessageCall(call: IMsgRpcCall): Promise<void> {
     let impl: Implementation|undefined;
-    if (this._implMap.hasOwnProperty(call.iface)) {
-      impl = this._implMap[call.iface];
-    } else {
-      // Note that this relies on _prefixMap maintaining entries in insertion order.
-      impl = this._prefixList.find((_impl) => call.iface.startsWith(_impl.name));
+    if (call.mdest) {
+      impl = this._forwarders.get(call.mdest);
       if (!impl) {
-        return this._failCall(call, "RPC_UNKNOWN_INTERFACE", `Unknown interface ${call.iface}`);
+        return this._failCall(call, "RPC_UNKNOWN_FORWARD_DEST", "Unknown forward destination");
+      }
+    } else {
+      impl = this._implMap.get(call.iface);
+      if (!impl) {
+        return this._failCall(call, "RPC_UNKNOWN_INTERFACE", "Unknown interface");
       }
     }
 
@@ -349,6 +384,10 @@ interface Implementation {
   argsCheckers: null | {
     [name: string]: tic.Checker;
   };
+}
+
+interface ImplementationFwd extends Implementation {
+  forwardMessage: (msg: IMsgCustom) => Promise<void>;
 }
 
 interface ICallObj {

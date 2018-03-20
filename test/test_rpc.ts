@@ -1,4 +1,5 @@
 import {assert} from "chai";
+import {EventEmitter} from "events";
 import {Rpc} from "../lib/rpc";
 
 interface ICalc {
@@ -20,8 +21,11 @@ class MyGreeting implements IGreet {
   public async getGreeting(name: string): Promise<string> { return `Hello, ${name}!${this.suffix}`; }
 }
 
-describe("ts-rpc", () => {
+function waitForEvent(emitter: EventEmitter, eventName: string): Promise<any> {
+  return new Promise((resolve) => emitter.once(eventName, resolve));
+}
 
+describe("ts-rpc", () => {
   it("should be able to make unchecked stubs and call methods", async () => {
     const rpc = new Rpc();
     rpc.start((msg) => rpc.receiveMessage(msg));
@@ -52,12 +56,12 @@ describe("ts-rpc", () => {
     //             |    |      |AtoC| <--> |CtoA|
     // |DtoB| <--> |BtoD|
 
-    // Allow C to call to B by calling A with "foo." prefix.
-    AtoC.registerForwarder("foo.", "", AtoB);
+    // Allow C to call to B by calling A with "foo" forwarder.
+    AtoC.registerForwarder("foo", AtoB);
 
-    // Allow D to call to C via B and A with "bar." prefix.
-    BtoD.registerForwarder("bar.", "bar.", BtoA);
-    AtoB.registerForwarder("bar.", "", AtoC);
+    // Allow D to call to C via B and A with "bar" forwarder.
+    BtoD.registerForwarder("bar", BtoA, "bar");
+    AtoB.registerForwarder("bar", AtoC);
 
     BtoA.registerImpl("my-greeting", new MyGreeting(" [from B]"));
     BtoA.registerFunc("func", async (name: string) => `Yo ${name} [from B]`);
@@ -65,15 +69,37 @@ describe("ts-rpc", () => {
     CtoA.registerImpl("my-greeting", new MyGreeting(" [from C]"));
     CtoA.registerFunc("func", async (name: string) => `Yo ${name} [from C]`);
 
-    assert.equal(await AtoB.getStub<IGreet>("my-greeting").getGreeting("World"), "Hello, World! [from B]");
-    assert.equal(await CtoA.getStub<IGreet>("foo.my-greeting").getGreeting("World"), "Hello, World! [from B]");
+    assert.equal(await AtoB.getStub<IGreet>("my-greeting").getGreeting("World"),
+      "Hello, World! [from B]");
+    assert.equal(await CtoA.getStubForward<IGreet>("foo", "my-greeting").getGreeting("World"),
+      "Hello, World! [from B]");
     assert.equal(await AtoB.callRemoteFunc("func", "Santa"), "Yo Santa [from B]");
-    assert.equal(await CtoA.callRemoteFunc("foo.func", "Santa"), "Yo Santa [from B]");
+    assert.equal(await CtoA.callRemoteFuncForward("foo", "func", "Santa"), "Yo Santa [from B]");
 
-    assert.equal(await AtoC.getStub<IGreet>("my-greeting").getGreeting("World"), "Hello, World! [from C]");
-    assert.equal(await DtoB.getStub<IGreet>("bar.my-greeting").getGreeting("World"), "Hello, World! [from C]");
+    assert.equal(await AtoC.getStub<IGreet>("my-greeting").getGreeting("World"),
+      "Hello, World! [from C]");
+    assert.equal(await DtoB.getStubForward<IGreet>("bar", "my-greeting").getGreeting("World"),
+      "Hello, World! [from C]");
     assert.equal(await AtoC.callRemoteFunc("func", "Santa"), "Yo Santa [from C]");
-    assert.equal(await DtoB.callRemoteFunc("bar.func", "Santa"), "Yo Santa [from C]");
+    assert.equal(await DtoB.callRemoteFuncForward("bar", "func", "Santa"), "Yo Santa [from C]");
+
+    // Test forwarding of custom messages.
+    let p: Promise<any>;
+    p = waitForEvent(AtoC, "message");
+    await CtoA.postMessage({hello: 1});
+    assert.deepEqual(await p, {hello: 1});
+
+    p = waitForEvent(BtoA, "message");
+    await CtoA.postMessageForward("foo", {hello: 2});
+    assert.deepEqual(await p, {hello: 2});
+
+    p = waitForEvent(BtoD, "message");
+    await DtoB.postMessage({world: 3});
+    assert.deepEqual(await p, {world: 3});
+
+    p = waitForEvent(CtoA, "message");
+    await DtoB.postMessageForward("bar", {world: 4});
+    assert.deepEqual(await p, {world: 4});
   });
 });
 
