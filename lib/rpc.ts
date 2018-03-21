@@ -157,7 +157,8 @@ export class Rpc extends EventEmitter {
     }
   }
 
-  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest: string = ""): void {
+  public registerForwarder(fwdName: string, destRpc: Rpc): void {
+    const fwdDest = fwdName;
     this._forwarders.set(fwdName, {
       name: "[FWD]" + fwdName,
       argsCheckers: null,
@@ -181,12 +182,9 @@ export class Rpc extends EventEmitter {
   public getStub<Iface extends any>(name: string): any;
   public getStub<Iface>(name: string, checker: tic.Checker): Iface;
   public getStub(name: string, checker?: tic.Checker): any {
-    return this.getStubForward("", name, checker!);
-  }
-
-  public getStubForward<Iface extends any>(fwdDest: string, name: string): any;
-  public getStubForward<Iface>(fwdDest: string, name: string, checker: tic.Checker): Iface;
-  public getStubForward(fwdDest: string, name: string, checker?: tic.Checker): any {
+    let fwdDest = "";
+    [fwdDest, name] = this._parseName(name);
+    console.log(`name: ${name}, fwdDest: ${fwdDest}`);
     if (!checker) {
       // TODO Test, then explain how this works.
       return new Proxy({}, {
@@ -228,10 +226,8 @@ export class Rpc extends EventEmitter {
    * Call a remote function registered with registerFunc. Does no type checking.
    */
   public callRemoteFunc(name: string, ...args: any[]): Promise<any> {
-    return this.callRemoteFuncForward("", name, ...args);
-  }
-
-  public callRemoteFuncForward(fwdDest: string, name: string, ...args: any[]): Promise<any> {
+    let fwdDest = "";
+    [fwdDest, name] = this._parseName(name);
     return this._makeCall(name, "invoke", args, anyChecker, fwdDest);
   }
 
@@ -264,10 +260,10 @@ export class Rpc extends EventEmitter {
   }
 
   private _onCustomMessage(msg: IMsgCustom): void {
-    if (msg.mdest) {
+    if (msg.mdest && this._forwarders.has(msg.mdest)) {
       const impl = this._forwarders.get(msg.mdest);
       if (!impl) {
-        this._warn(null, "RPC_UNKNOWN_FORWARD_DEST", "Unknown forward destination");
+        this._warn(null, "RPC_UNKNOWN_FORWARD_DEST", `Unknown forward destination ${msg.mdest}`);
       } else {
         impl.forwardMessage(msg);
       }
@@ -278,15 +274,15 @@ export class Rpc extends EventEmitter {
 
   private async _onMessageCall(call: IMsgRpcCall): Promise<void> {
     let impl: Implementation|undefined;
-    if (call.mdest) {
+    if (call.mdest && this._forwarders.has(call.mdest)) {
       impl = this._forwarders.get(call.mdest);
       if (!impl) {
-        return this._failCall(call, "RPC_UNKNOWN_FORWARD_DEST", "Unknown forward destination");
+        return this._failCall(call, "RPC_UNKNOWN_FORWARD_DEST", `Unknown forward destination ${call.mdest}, ${Array.from(this._forwarders.keys())}`);
       }
     } else {
       impl = this._implMap.get(call.iface);
       if (!impl) {
-        return this._failCall(call, "RPC_UNKNOWN_INTERFACE", "Unknown interface");
+        return this._failCall(call, "RPC_UNKNOWN_INTERFACE", `Unknown interface: ${call.iface}`);
       }
     }
 
@@ -370,6 +366,15 @@ export class Rpc extends EventEmitter {
   private _callDesc(call: IMsgRpcCall|ICallObj|null): string {
     if (!call) { return "?"; }
     return `${call.iface}.${call.meth}#${call.reqId || "-"}`;
+  }
+
+  private _parseName(name: string): [string, string] {
+    let fwdDest = "";
+    if (name.indexOf(".") > -1) {
+      fwdDest = name.split(".")[0];
+      name = name.substring(fwdDest.length + 1);
+    }
+    return [fwdDest, name];
   }
 }
 

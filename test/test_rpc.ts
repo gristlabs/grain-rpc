@@ -60,7 +60,7 @@ describe("ts-rpc", () => {
     AtoC.registerForwarder("foo", AtoB);
 
     // Allow D to call to C via B and A with "bar" forwarder.
-    BtoD.registerForwarder("bar", BtoA, "bar");
+    BtoD.registerForwarder("bar", BtoA);
     AtoB.registerForwarder("bar", AtoC);
 
     BtoA.registerImpl("my-greeting", new MyGreeting(" [from B]"));
@@ -71,17 +71,17 @@ describe("ts-rpc", () => {
 
     assert.equal(await AtoB.getStub<IGreet>("my-greeting").getGreeting("World"),
       "Hello, World! [from B]");
-    assert.equal(await CtoA.getStubForward<IGreet>("foo", "my-greeting").getGreeting("World"),
+    assert.equal(await CtoA.getStub<IGreet>("foo.my-greeting").getGreeting("World"),
       "Hello, World! [from B]");
     assert.equal(await AtoB.callRemoteFunc("func", "Santa"), "Yo Santa [from B]");
-    assert.equal(await CtoA.callRemoteFuncForward("foo", "func", "Santa"), "Yo Santa [from B]");
+    assert.equal(await CtoA.callRemoteFunc("foo.func", "Santa"), "Yo Santa [from B]");
 
     assert.equal(await AtoC.getStub<IGreet>("my-greeting").getGreeting("World"),
       "Hello, World! [from C]");
-    assert.equal(await DtoB.getStubForward<IGreet>("bar", "my-greeting").getGreeting("World"),
+    assert.equal(await DtoB.getStub<IGreet>("bar.my-greeting").getGreeting("World"),
       "Hello, World! [from C]");
     assert.equal(await AtoC.callRemoteFunc("func", "Santa"), "Yo Santa [from C]");
-    assert.equal(await DtoB.callRemoteFuncForward("bar", "func", "Santa"), "Yo Santa [from C]");
+    assert.equal(await DtoB.callRemoteFunc("bar.func", "Santa"), "Yo Santa [from C]");
 
     // Test forwarding of custom messages.
     let p: Promise<any>;
