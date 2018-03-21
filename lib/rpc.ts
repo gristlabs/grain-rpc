@@ -157,8 +157,7 @@ export class Rpc extends EventEmitter {
     }
   }
 
-  public registerForwarder(fwdName: string, destRpc: Rpc): void {
-    const fwdDest = fwdName;
+  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest?: string = fwdName): void {
     this._forwarders.set(fwdName, {
       name: "[FWD]" + fwdName,
       argsCheckers: null,
