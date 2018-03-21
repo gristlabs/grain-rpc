@@ -120,9 +120,16 @@ export class Rpc extends EventEmitter {
   /**
    * Messaging interface: send data to the other side, to be emitted there as a "message" event.
    */
-  public postMessage(data: any): Promise<void> { return this.postMessageForward("", data); }
 
-  public async postMessageForward(fwdDest: string, data: any): Promise<void> {
+  public async postMessage(data: any): Promise<void>;
+  public async postMessage(fwdDest: string, data: any): Promise<void>;
+  public async postMessage(...args: any[]): Promise<void> {
+    let fwdDest = "";
+    let data = args[0];
+    if (args.length === 2) {
+      fwdDest = args[0];
+      data = args[1];
+    }
     const msg: IMsgCustom = {mtype: MsgType.Custom, data};
     if (fwdDest) { msg.mdest = fwdDest; }
     await this._sendMessage(msg);
@@ -157,12 +164,12 @@ export class Rpc extends EventEmitter {
     }
   }
 
-  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest?: string = fwdName): void {
+  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest: string = fwdName): void {
     this._forwarders.set(fwdName, {
       name: "[FWD]" + fwdName,
       argsCheckers: null,
       invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker, fwdDest),
-      forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(fwdDest, msg.data),
+      forwardMessage: (msg: IMsgCustom) => destRpc.postMessage(fwdDest, msg.data),
     });
   }
 

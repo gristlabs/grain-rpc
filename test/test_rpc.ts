@@ -90,7 +90,7 @@ describe("ts-rpc", () => {
     assert.deepEqual(await p, {hello: 1});
 
     p = waitForEvent(BtoA, "message");
-    await CtoA.postMessageForward("foo", {hello: 2});
+    await CtoA.postMessage("foo", {hello: 2});
     assert.deepEqual(await p, {hello: 2});
 
     p = waitForEvent(BtoD, "message");
@@ -98,7 +98,7 @@ describe("ts-rpc", () => {
     assert.deepEqual(await p, {world: 3});
 
     p = waitForEvent(CtoA, "message");
-    await DtoB.postMessageForward("bar", {world: 4});
+    await DtoB.postMessage("bar", {world: 4});
     assert.deepEqual(await p, {world: 4});
   });
 });
