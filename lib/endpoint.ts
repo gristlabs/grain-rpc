@@ -13,11 +13,10 @@
  *  - Instantiate a Node object in each distinct computational element.
  *  - Call node.addOutput to tell the node how to send data to neigboring
  *    nodes.
- *  - Call node.listen(rpc, name) to place the rpc element as an endpoint
- *    on the network, with the given endpoint name.
- *  - Anywhere else in the network, call node.connect(rpc, name, target) to
- *    place the rpc on the network with the given endpoint `name`, and to hook
- *    it up to talk to the endpoint called `target` as if they were on other
+ *  - Call node.listen(target) to get an rpc element reachable from the 
+ *    network with a given name, `target`.
+ *  - Anywhere else in the network, call node.connect(target) to get an
+ *    rpc to talk to the endpoint called `target` as if they were on other
  *    ends of a simple channel.
  *
  * Limitations:
@@ -27,7 +26,6 @@
  * messages will just stall in a queue waiting for an endpoint to show up.
  *
  */
-
 
 import {IMessage, MsgType} from "./message";
 import {Rpc, SendMessageCB} from "./rpc";
@@ -78,7 +76,7 @@ export class Endpoint {
     }
     return this.node.deliver(msg, {
       destEndpoint: this.target,
-      srcEndpoint: name
+      srcEndpoint: name,
     });
   }
 }
@@ -88,69 +86,14 @@ export class Endpoint {
  * and replies to and from named endpoints.
  */
 export class Node {
-  public links = new Map<string, Link>();  // connections to peers, by link name
-  public steps = new Map<string, Link>();  // connections to peers, by endpoint
-  public mine = new Map<string, Endpoint>(); // endpoints attached to this node
-  public _queue = new Array<any>(); // queue of messages not yet deliverable
+  private _links = new Map<string, Link>();  // connections to peers, by link name
+  private _steps = new Map<string, Link>();  // connections to peers, by endpoint
+  private _mine = new Map<string, Endpoint>(); // endpoints attached to this node
+  private _queue = new Array<any>(); // queue of messages not yet deliverable
+  private _connectedRpcs = new Map<string, Rpc>(); // rpcs that are connected to a specific target
+  private _listeningRpcs = new Map<string, Rpc>(); // rpcs that are listening with a given name
 
-  public constructor(public nodeName: string) {  // nodename is decorative only
-  }
-
-  /**
-   * Give an rpc endpoint a routable name on the network.
-   * Optionally, declare a target endpoint to which any traffic it
-   * initiates should be routed to.
-   */
-  public listen(rpc: Rpc, name: string, target?: string): void {
-    const listener = new Endpoint(name, rpc, this, target);
-    this.mine.set(name, listener);
-    for (const link of this.links.values()) {
-      // tell neigbors about this endpoint
-      link.sendMessage({
-        mtype: MsgType.Custom,
-        data: null,
-        name: name,
-        cost: 0.0
-      } as IMessage);
-    }
-    rpc.start((msg: any) => {
-      if (!target) {
-        throw new Error("Cannot ship data without a target");
-      }
-      this.deliver(msg, {
-        destEndpoint: target,
-        srcEndpoint: name
-      });
-    });
-    this.update();
-  }
-
-  /** name an endpoint with the express purpose of talking to a named target */
-  public connect(rpc: Rpc, name: string, target: string): void {
-    this.listen(rpc, name, target);
-    this.update();
-  }
-
-  /** 
-   * deliver a message to its target, or move it one step along, or enqueue it for
-   * when a route becomes available
-   */
-  public async deliver(msg: any, env: IEnvelope): Promise<void> {
-    msg.msgEnvelope = env;
-    const me = this.mine.get(env.destEndpoint);
-    if (me) {
-      const altEnv: IEnvelope = {
-        destEndpoint: env.srcEndpoint,
-        srcEndpoint: env.destEndpoint
-      };
-      return me.dest.receiveMessage(msg, (reply: any) => this.deliver(reply, altEnv));
-    }
-    const step = this.steps.get(env.destEndpoint);
-    if (step) {
-      step.sendMessage(msg);
-    } else {
-      this._queue.push(msg);
-    }
+  public constructor(public nodeName: string) {  // nodename should be unique across network
   }
 
   /**
@@ -158,24 +101,24 @@ export class Node {
    */
   public addOutput(linkName: string, sendMessage: SendMessageCB, cost: number): Link {
     const link = new Link(linkName, sendMessage, cost, this);
-    this.links.set(linkName, link);
-    for (const listener of this.mine.values()) {
+    this._links.set(linkName, link);
+    for (const listener of this._mine.values()) {
       link.sendMessage({
         mtype: MsgType.Custom,
         data: null,
         name: listener.name,
-        cost: 0.0
+        cost: 0.0,
       } as IMessage);
     }
-    for (const [name, step] of this.steps.entries()) {
+    for (const [name, step] of this._steps.entries()) {
       link.sendMessage({
         mtype: MsgType.Custom,
         data: null,
-        name: name,
+        name,
         cost: step.distances.get(name),
       } as IMessage);
     }
-    this.update();
+    this._update();
     return link;
   }
 
@@ -183,7 +126,7 @@ export class Node {
    * Receive input from a neighboring node.
    */
   public receiveInput(linkName: string, data: any): void {
-    const link = this.links.get(linkName);
+    const link = this._links.get(linkName);
     if (!link) {
       throw new Error(`unknown link ${linkName} for node ${this.nodeName}`);
     }
@@ -192,12 +135,12 @@ export class Node {
       return;
     }
     if (data.name) {
-      if (this.mine.get(data.name)) {
+      if (this._mine.get(data.name)) {
         // this post does not interest us.
         return;
       }
-      let cost = data.cost + link.cost;
-      const prevLink = this.steps.get(data.name);
+      const cost = data.cost + link.cost;
+      const prevLink = this._steps.get(data.name);
       if (prevLink) {
         const prevCost = prevLink.distances.get(data.name);
         if (prevCost! < cost) {
@@ -206,9 +149,9 @@ export class Node {
         }
       }
       link.distances.set(data.name, cost);
-      this.steps.set(data.name, link);
+      this._steps.set(data.name, link);
 
-      for (const altLink of this.links.values()) {
+      for (const altLink of this._links.values()) {
         if (altLink.name !== linkName) {
           altLink.sendMessage({
             mtype: MsgType.Custom,
@@ -218,16 +161,97 @@ export class Node {
           } as IMessage);
         }
       }
-      this.update();
+      this._update();
+    }
+  }
+
+  /** return an Rpc for communicating with a given endpointName. */
+  public connect(endpointName: string, replyName?: string): Rpc {
+    let rpc = this._connectedRpcs.get(endpointName);
+    if (!rpc) {
+      const returnName = replyName || `${this.nodeName}#${endpointName}`;
+      rpc = new Rpc();
+      this.addEndpoint(rpc, returnName, endpointName);
+      this._connectedRpcs.set(endpointName, rpc);
+    }
+    return rpc;
+  }
+
+  public getStub<Iface>(endpointName: string, interfaceName: string): Iface {
+    return this.connect(endpointName).getStub<Iface>(interfaceName);
+  }
+
+  public listen(endpointName: string): Rpc {
+    let rpc = this._listeningRpcs.get(endpointName);
+    if (!rpc) {
+      rpc = new Rpc();
+      this.addEndpoint(rpc, endpointName);
+      this._listeningRpcs.set(endpointName, rpc);
+    }
+    return rpc;
+  }
+
+  public registerImpl<Iface>(endpointName: string, interfaceName: string, impl: Iface): void {
+    return this.listen(endpointName).registerImpl<Iface>(interfaceName, impl);
+  }
+
+
+  /**
+   * Give an rpc endpoint a routable name on the network.
+   * Optionally, declare a target endpoint to which any traffic it
+   * initiates should be routed to.
+   */
+  public addEndpoint(rpc: Rpc, name: string, target?: string): void {
+    const listener = new Endpoint(name, rpc, this, target);
+    this._mine.set(name, listener);
+    for (const link of this._links.values()) {
+      // tell neigbors about this endpoint
+      link.sendMessage({
+        mtype: MsgType.Custom,
+        data: null,
+        name,
+        cost: 0.0,
+      } as IMessage);
+    }
+    rpc.start((msg: any) => {
+      if (!target) {
+        throw new Error("Cannot ship data without a target");
+      }
+      this.deliver(msg, {
+        destEndpoint: target,
+        srcEndpoint: name,
+      });
+    });
+    this._update();
+  }
+
+  /**
+   * deliver a message to its target, or move it one step along, or enqueue it for
+   * when a route becomes available
+   */
+  public async deliver(msg: any, env: IEnvelope): Promise<void> {
+    msg.msgEnvelope = env;
+    const me = this._mine.get(env.destEndpoint);
+    if (me) {
+      const altEnv: IEnvelope = {
+        destEndpoint: env.srcEndpoint,
+        srcEndpoint: env.destEndpoint,
+      };
+      return me.dest.receiveMessage(msg, (reply: any) => this.deliver(reply, altEnv));
+    }
+    const step = this._steps.get(env.destEndpoint);
+    if (step) {
+      step.sendMessage(msg);
+    } else {
+      this._queue.push(msg);
     }
   }
 
   /** routing has changed, see if we can pass along any messages */
-  public update() {
-    const pending: Array<any> = this._queue.splice(0);
+  private _update() {
+    const pending: any[] = this._queue.splice(0);
     for (const msg of pending) {
       this.deliver(msg, msg.msgEnvelope);
     }
   }
 }
-
