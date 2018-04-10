@@ -160,6 +160,12 @@ export class Rpc extends EventEmitter {
       // TODO Test, then explain how this works.
       return new Proxy({}, {
         get: (target, property: string, receiver) => {
+          if (property === "then") {
+            // By default, take care not to look "thenable":
+            // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/resolve
+            // If user really wants to proxy "then", they can write a checker.
+            return undefined;
+          }
           return (...args: any[]) => this._makeCall(name, property, args, anyChecker);
         },
       });
