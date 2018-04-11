@@ -33,8 +33,8 @@ class Calc implements ICalc {
   }
 }
 
-const rpc = new Rpc();
-rpc.start(yourSendMessageFunction);  // also be sure send messages to rpc.receiveMessage()
+const rpc = new Rpc({sendMessage: yourSendMessageFunction});
+// ... hook up incoming messages to rpc.receiveMessage() ...
 rpc.registerImpl<ICalc>("calc", new Calc());
 ```
 
@@ -44,13 +44,14 @@ And on the other side you can do:
 import {ICalc} from './ICalc';
 import {Rpc} from 'grain-rpc';
 
-const rpc = new Rpc();
-rpc.start(yourSendMessageFunction);  // also be sure send messages to rpc.receiveMessage()
+const rpc = new Rpc({sendMessage: yourSendMessageFunction});
+// ... hook up incoming messages to rpc.receiveMessage() ...
 rpc.getStub<ICalc>("calc");
 console.log(await stub.add(4, 5));   // should print 9
 ```
 
-Rpc library supports ts-interface-checker descriptors for the interfaces, to allow validation.
+Rpc library supports [ts-interface-checker](https://github.com/gristlabs/ts-interface-checker)
+descriptors for the interfaces, to allow validation.
 
 The string name used to register and use an implementation allows for the same Rpc object to be
 used to expose multiple interfaces, or different implementations of the same interface.
