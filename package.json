@@ -9,7 +9,7 @@
     "watch": "tsc -w",
     "test": "tsc && nyc mocha -R list test/",
     "preversion": "npm test",
-    "version": "npm run build && git add dist/"
+    "version": "npm run build"
   },
   "repository": {
     "type": "git",
@@ -28,7 +28,7 @@
   },
   "homepage": "https://github.com/gristlabs/grain-rpc#readme",
   "files": [
-    "dist"
+    "dist/lib/"
   ],
   "nyc": {
     "extension": [
