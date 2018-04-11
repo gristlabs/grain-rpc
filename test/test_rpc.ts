@@ -48,7 +48,7 @@ describe("ts-rpc", () => {
 
   describe("getStub", () => {
 
-    it("should not look thenable for unchecked interfaces", async () => {
+    it("should be able to return safely from async methods", async () => {
       const rpc = new Rpc(defaults);
       rpc.start((msg) => rpc.receiveMessage(msg));
       rpc.registerImpl<ICalc>("calc", new Calc());
@@ -60,6 +60,14 @@ describe("ts-rpc", () => {
       const stub = await getCalc();
       assert(stub);
       assert.equal(await stub.add(4, 5), 9);
+    });
+
+    it("should be able to pass through Promise.resolve", async () => {
+      const rpc = new Rpc(defaults);
+      rpc.start((msg) => rpc.receiveMessage(msg));
+      rpc.registerImpl<ICalc>("calc", new Calc());
+      const stub = Promise.resolve(rpc.getStub<ICalc>("calc"));
+      assert.equal(await stub.then(calc => calc.add(4, 5)), 9);
     });
 
   });

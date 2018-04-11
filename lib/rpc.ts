@@ -161,7 +161,8 @@ export class Rpc extends EventEmitter {
       return new Proxy({}, {
         get: (target, property: string, receiver) => {
           if (property === "then") {
-            // By default, take care not to look "thenable":
+            // By default, take care not to look "thenable", so that the stub can be returned
+            // as a value of a Promise:
             // https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Global_Objects/Promise/resolve
             // If user really wants to proxy "then", they can write a checker.
             return undefined;
