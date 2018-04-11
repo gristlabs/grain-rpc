@@ -1,9 +1,9 @@
 {
-  "name": "ts-rpc",
+  "name": "grain-rpc",
   "version": "0.1.0",
   "description": "Typed RPC interface on top of an arbitrary communication channel",
-  "main": "dist/index",
-  "typings": "dist/index",
+  "main": "dist/lib/index",
+  "typings": "dist/lib/index",
   "scripts": {
     "build": "tsc",
     "watch": "tsc -w",
@@ -24,9 +24,9 @@
   "author": "Dmitry S, Grist Labs",
   "license": "Apache-2.0",
   "bugs": {
-    "url": "https://github.com/gristlabs/ts-rpc/issues"
+    "url": "https://github.com/gristlabs/grain-rpc/issues"
   },
-  "homepage": "https://github.com/gristlabs/ts-rpc#readme",
+  "homepage": "https://github.com/gristlabs/grain-rpc#readme",
   "files": [
     "dist"
   ],
