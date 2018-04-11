@@ -1,9 +1,13 @@
-import {assert} from "chai";
+import {assert, use} from "chai";
+import * as chaiAsPromised from "chai-as-promised";
+import {createCheckers} from "ts-interface-checker";
 import {Rpc} from "../lib/rpc";
+import {ICalc} from "./ICalc";
+import ICalcTI from "./ICalc-ti";
 
-interface ICalc {
-  add(x: number, y: number): number;
-}
+use(chaiAsPromised);
+
+const checkersForICalc = createCheckers(ICalcTI).ICalc;
 
 class Calc implements ICalc {
   public add(x: number, y: number): number {
@@ -70,5 +74,51 @@ describe("Rpc", () => {
       assert.equal(await stub.then(calc => calc.add(4, 5)), 9);
     });
 
+  });
+
+  describe("checker", () => {
+
+    it("should allow calling methods that exist", async () => {
+      const rpc = new Rpc(defaults);
+      rpc.start((msg) => rpc.receiveMessage(msg));
+      rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
+      const stub = rpc.getStub<ICalc>("calc", checkersForICalc);
+      assert.equal(await stub.add(4, 5), 9);
+    });
+
+    it("should forbid calling methods that do not exist", async () => {
+      const rpc = new Rpc(defaults);
+      rpc.start((msg) => rpc.receiveMessage(msg));
+      rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
+      const stub = rpc.getStub<ICalc>("calc", checkersForICalc);
+      // "any" cast needed to avoid typescript catching the error
+      assert.throws(() => (stub as any).additionify(4, 5), /is not a function/);
+    });
+
+    it("should catch missing methods at typed stub", async () => {
+      const rpc = new Rpc(defaults);
+      const stub = rpc.getStub<ICalc>("calc", checkersForICalc);
+      assert(stub);
+      // "any" cast needed to avoid typescript catching the error
+      assert.throws(() => (stub as any).additionify(4, 5), /is not a function/);
+    });
+
+    it("should catch missing methods at implementation for untyped stub", async () => {
+      const rpc = new Rpc(defaults);
+      rpc.start((msg) => rpc.receiveMessage(msg));
+      rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
+      const stub = rpc.getStub<ICalc>("calc");
+      // "any" cast needed to avoid typescript catching the error
+      await assert.isRejected((stub as any).additionify(4, 5), /Unknown method/);
+    });
+
+    it("should catch bad types at implementation", async () => {
+      const rpc = new Rpc(defaults);
+      rpc.start((msg) => rpc.receiveMessage(msg));
+      rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
+      const stub = rpc.getStub<ICalc>("calc");
+      // "any" cast needed to avoid typescript catching the error
+      await assert.isRejected((stub as any).add("hello", 5), /not a number/);
+    });
   });
 });
