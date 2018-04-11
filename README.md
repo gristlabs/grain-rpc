@@ -16,7 +16,7 @@ either side, and call methods on those interfaces from the other side.  This is
 particularly pleasant with typescript.  For example, if you define this interface:
 
 ```typescript
-interface ICalc {
+export interface ICalc {
   add(x: number, y: number): number;
 }
 ```
