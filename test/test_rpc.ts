@@ -21,7 +21,7 @@ class MyGreeting implements IGreet {
 
 const defaults = { logger: {} };
 
-describe("ts-rpc", () => {
+describe("Rpc", () => {
 
   describe("basics", () => {
 
