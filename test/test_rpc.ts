@@ -86,19 +86,9 @@ describe("Rpc", () => {
       assert.equal(await stub.add(4, 5), 9);
     });
 
-    it("should forbid calling methods that do not exist", async () => {
-      const rpc = new Rpc(defaults);
-      rpc.start((msg) => rpc.receiveMessage(msg));
-      rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
-      const stub = rpc.getStub<ICalc>("calc", checkersForICalc);
-      // "any" cast needed to avoid typescript catching the error
-      assert.throws(() => (stub as any).additionify(4, 5), /is not a function/);
-    });
-
     it("should catch missing methods at typed stub", async () => {
       const rpc = new Rpc(defaults);
       const stub = rpc.getStub<ICalc>("calc", checkersForICalc);
-      assert(stub);
       // "any" cast needed to avoid typescript catching the error
       assert.throws(() => (stub as any).additionify(4, 5), /is not a function/);
     });
@@ -108,17 +98,18 @@ describe("Rpc", () => {
       rpc.start((msg) => rpc.receiveMessage(msg));
       rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
       const stub = rpc.getStub<ICalc>("calc");
-      // "any" cast needed to avoid typescript catching the error
-      await assert.isRejected((stub as any).additionify(4, 5), /Unknown method/);
+      await assert.isRejected(stub.additionify(4, 5), /Unknown method/);
     });
 
-    it("should catch bad types at implementation", async () => {
+    it("should catch bad + missing arguments at implementation", async () => {
       const rpc = new Rpc(defaults);
       rpc.start((msg) => rpc.receiveMessage(msg));
       rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
       const stub = rpc.getStub<ICalc>("calc");
-      // "any" cast needed to avoid typescript catching the error
-      await assert.isRejected((stub as any).add("hello", 5), /not a number/);
+      await assert.isRejected(stub.add("hello", 5), /not a number/);
+      await assert.isRejected(stub.add(), /value.x is missing/);
+      await assert.isRejected(stub.add(1), /value.y is missing/);
+      await assert.equal(await stub.add(10, 9, 8), 19);  // by default, extra args are allowed
     });
   });
 });
