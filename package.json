@@ -13,7 +13,7 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/gristlabs/ts-interface-checker.git"
+    "url": "git+https://github.com/gristlabs/grain-rpc.git"
   },
   "keywords": [
     "rpc",
