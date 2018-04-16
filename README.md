@@ -59,3 +59,18 @@ used to expose multiple interfaces, or different implementations of the same int
 Rpc also supports a messaging interface, with `postMessage()` to send arbitrary messages, and an
 `EventEmitter` interface for "message" events to receive them, e.g. `on("message", ...)`. So if you
 need to multiplex non-Rpc messages over the same channel, Rpc class does it for you.
+
+
+Forwarding
+----------
+
+Rpc connections can be linked together transparently using named forwarders.
+For example:
+
+```typescript
+const frontend = new Rpc(...);
+const backend = new Rpc(...);
+frontend.registerForwarder("backend", backend);
+frontend.getStub<ICalc>("calc@backend");
+console.log(await stub.add(4, 5));   // will call calc.add(4, 5) on backend
+```
