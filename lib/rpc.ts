@@ -52,6 +52,13 @@
  * B, and B to C. Then B can use registerForwarder to expose A's interfaces to C (or C's to A)
  * without having to know what exactly they are.
  *
+ * Instead of using getStubForward and callRemoteFuncForward, the forwarder name can be
+ * appended to the interface name as "interfaceName@forwarderName" and the regular
+ * getStub and callRemoteFunc methods can be used.  For example:
+ *   getStub("iface@forwarder")
+ * is the same as:
+ *   getStubForward("forwarder", "iface")
+ *
  * E.g. with A.registerImpl("A-name", ...) and B.registerForwarder("b2a", A), we may now call
  * C.getStubForward("b2a", "A-name") to get a stub that will forward calls to A, as well as
  * C.postMessageForward("b2a", msg) to have the message received by A.
@@ -68,6 +75,11 @@ import * as tic from "ts-interface-checker";
 import {IMessage, IMsgCustom, IMsgRpcCall, IMsgRpcRespData, IMsgRpcRespErr, MsgType} from "./message";
 
 export type SendMessageCB = (msg: IMessage) => PromiseLike<void> | void;
+
+interface IForwardingName {
+  forwarder: string;
+  name: string;
+}
 
 export class Rpc extends EventEmitter {
   private _sendMessage: SendMessageCB;
@@ -177,11 +189,14 @@ export class Rpc extends EventEmitter {
    * Creates a local stub for the given remote interface. The stub implements Iface, forwarding
    * calls to the remote implementation, each one returning a Promise for the received result.
    * To skip all validation, use `any` for the type and omit the last argument.
+   *
+   * Interface names can be followed by a "@<forwarder>" part
    */
   public getStub<Iface extends any>(name: string): any;
   public getStub<Iface>(name: string, checker: tic.Checker): Iface;
   public getStub(name: string, checker?: tic.Checker): any {
-    return this.getStubForward("", name, checker!);
+    const parts = this._parseName(name);
+    return this.getStubForward(parts.forwarder, parts.name, checker!);
   }
 
   public getStubForward<Iface extends any>(fwdDest: string, name: string): any;
@@ -235,7 +250,8 @@ export class Rpc extends EventEmitter {
    * Call a remote function registered with registerFunc. Does no type checking.
    */
   public callRemoteFunc(name: string, ...args: any[]): Promise<any> {
-    return this.callRemoteFuncForward("", name, ...args);
+    const parts = this._parseName(name);
+    return this.callRemoteFuncForward(parts.forwarder, parts.name, ...args);
   }
 
   public callRemoteFuncForward(fwdDest: string, name: string, ...args: any[]): Promise<any> {
@@ -377,6 +393,20 @@ export class Rpc extends EventEmitter {
   private _callDesc(call: IMsgRpcCall|ICallObj|null): string {
     if (!call) { return "?"; }
     return `${call.iface}.${call.meth}#${call.reqId || "-"}`;
+  }
+
+  private _parseName(name: string): IForwardingName {
+    const idx = name.lastIndexOf("@");
+    if (idx === -1) {
+      return {
+        forwarder: "",
+        name,
+      };
+    }
+    return {
+      name: name.substr(0, idx),
+      forwarder: name.substr(idx + 1),
+    };
   }
 }
 

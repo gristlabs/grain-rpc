@@ -175,10 +175,33 @@ describe("Rpc", () => {
     await DtoB.postMessageForward("bar", {world: 4});
     assert.deepEqual(await p, {world: 4});
   });
+
+  it("should support @ syntax", async () => {
+    const [AtoB, BtoA] = createRpcPair();
+    const [AtoC, CtoA] = createRpcPair();
+    AtoC.registerForwarder("foo", AtoB);
+
+    BtoA.registerImpl("my-greeting", new MyGreeting(" [from B]"));
+    BtoA.registerFunc("func", async (name: string) => `Yo ${name} [from B]`);
+
+    CtoA.registerImpl("my-greeting", new MyGreeting(" [from C]"));
+    CtoA.registerFunc("func", async (name: string) => `Yo ${name} [from C]`);
+
+    assert.equal(await CtoA.getStub<IGreet>("my-greeting@foo").getGreeting("World"),
+      "Hello, World! [from B]");
+    assert.equal(await CtoA.callRemoteFunc("func@foo", "Santa"), "Yo Santa [from B]");
+
+    assert.isRejected(CtoA.callRemoteFunc("func@food", "Santa"),
+                      /Unknown forward/);
+    assert.isRejected(CtoA.callRemoteFunc("@foo", "Santa"),
+                      /Unknown interface/);
+    assert.isRejected(CtoA.callRemoteFunc("func@funkytown@foo", "Santa"),
+                      /Unknown interface/);
+  });
 });
 
 function createRpcPair(): [Rpc, Rpc] {
-  const aRpc: Rpc = new Rpc({sendMessage: (msg) => bRpc.receiveMessage(msg)});
-  const bRpc: Rpc = new Rpc({sendMessage: (msg) => aRpc.receiveMessage(msg)});
+  const aRpc: Rpc = new Rpc({logger: {}, sendMessage: (msg) => bRpc.receiveMessage(msg)});
+  const bRpc: Rpc = new Rpc({logger: {}, sendMessage: (msg) => aRpc.receiveMessage(msg)});
   return [aRpc, bRpc];
 }
