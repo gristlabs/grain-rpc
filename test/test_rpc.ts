@@ -1,6 +1,7 @@
 import {assert, use} from "chai";
 import * as chaiAsPromised from "chai-as-promised";
 import {createCheckers} from "ts-interface-checker";
+import {EventEmitter} from "events";
 import {Rpc} from "../lib/rpc";
 import {ICalc} from "./ICalc";
 import ICalcTI from "./ICalc-ti";
@@ -20,10 +21,15 @@ interface IGreet {
 }
 
 class MyGreeting implements IGreet {
-  public async getGreeting(name: string): Promise<string> { return `Hello, ${name}!`; }
+  constructor(private suffix: string = "") {}
+  public async getGreeting(name: string): Promise<string> { return `Hello, ${name}!${this.suffix}`; }
 }
 
 const defaults = { logger: {} };
+
+function waitForEvent(emitter: EventEmitter, eventName: string): Promise<any> {
+  return new Promise((resolve) => emitter.once(eventName, resolve));
+}
 
 describe("Rpc", () => {
 
@@ -112,4 +118,67 @@ describe("Rpc", () => {
       await assert.equal(await stub.add(10, 9, 8), 19);  // by default, extra args are allowed
     });
   });
+
+  it("should support forwarding calls", async () => {
+    const [AtoB, BtoA] = createRpcPair();
+    const [AtoC, CtoA] = createRpcPair();
+    const [DtoB, BtoD] = createRpcPair();
+
+    // In the naming of the Rpc objects, think the first letter as the entity that maintains this
+    // Rpc object, and the second letter as Rpc's other endpoint. Then we have this topology:
+    //             |BtoA| <--> |AtoB|
+    //             |    |      |AtoC| <--> |CtoA|
+    // |DtoB| <--> |BtoD|
+
+    // Allow C to call to B by calling A with "foo" forwarder.
+    AtoC.registerForwarder("foo", AtoB);
+
+    // Allow D to call to C via B and A with "bar" forwarder.
+    BtoD.registerForwarder("bar", BtoA, "bar");
+    AtoB.registerForwarder("bar", AtoC);
+
+    BtoA.registerImpl("my-greeting", new MyGreeting(" [from B]"));
+    BtoA.registerFunc("func", async (name: string) => `Yo ${name} [from B]`);
+
+    CtoA.registerImpl("my-greeting", new MyGreeting(" [from C]"));
+    CtoA.registerFunc("func", async (name: string) => `Yo ${name} [from C]`);
+
+    assert.equal(await AtoB.getStub<IGreet>("my-greeting").getGreeting("World"),
+      "Hello, World! [from B]");
+    assert.equal(await CtoA.getStubForward<IGreet>("foo", "my-greeting").getGreeting("World"),
+      "Hello, World! [from B]");
+    assert.equal(await AtoB.callRemoteFunc("func", "Santa"), "Yo Santa [from B]");
+    assert.equal(await CtoA.callRemoteFuncForward("foo", "func", "Santa"), "Yo Santa [from B]");
+
+    assert.equal(await AtoC.getStub<IGreet>("my-greeting").getGreeting("World"),
+      "Hello, World! [from C]");
+    assert.equal(await DtoB.getStubForward<IGreet>("bar", "my-greeting").getGreeting("World"),
+      "Hello, World! [from C]");
+    assert.equal(await AtoC.callRemoteFunc("func", "Santa"), "Yo Santa [from C]");
+    assert.equal(await DtoB.callRemoteFuncForward("bar", "func", "Santa"), "Yo Santa [from C]");
+
+    // Test forwarding of custom messages.
+    let p: Promise<any>;
+    p = waitForEvent(AtoC, "message");
+    await CtoA.postMessage({hello: 1});
+    assert.deepEqual(await p, {hello: 1});
+
+    p = waitForEvent(BtoA, "message");
+    await CtoA.postMessageForward("foo", {hello: 2});
+    assert.deepEqual(await p, {hello: 2});
+
+    p = waitForEvent(BtoD, "message");
+    await DtoB.postMessage({world: 3});
+    assert.deepEqual(await p, {world: 3});
+
+    p = waitForEvent(CtoA, "message");
+    await DtoB.postMessageForward("bar", {world: 4});
+    assert.deepEqual(await p, {world: 4});
+  });
 });
+
+function createRpcPair(): [Rpc, Rpc] {
+  const aRpc: Rpc = new Rpc({sendMessage: (msg) => bRpc.receiveMessage(msg)});
+  const bRpc: Rpc = new Rpc({sendMessage: (msg) => aRpc.receiveMessage(msg)});
+  return [aRpc, bRpc];
+}
