@@ -23,6 +23,7 @@ export interface IMsgRpcCall {
   iface: string;
   meth: string;
   args: any[];
+  scope?: {[name: string]: any};  // Optional identity information.
 }
 
 // Message describing an RPC successful response.

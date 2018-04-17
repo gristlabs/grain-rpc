@@ -3,16 +3,24 @@ import * as chaiAsPromised from "chai-as-promised";
 import {createCheckers} from "ts-interface-checker";
 import {EventEmitter} from "events";
 import {Rpc} from "../lib/rpc";
-import {ICalc} from "./ICalc";
+import {ICalc, IScopedCalc} from "./ICalc";
 import ICalcTI from "./ICalc-ti";
 
 use(chaiAsPromised);
 
-const checkersForICalc = createCheckers(ICalcTI).ICalc;
+const checkers = createCheckers(ICalcTI);
+const checkersForICalc = checkers.ICalc;
+const checkersForIScopedCalc = checkers.IScopedCalc;
 
 class Calc implements ICalc {
   public add(x: number, y: number): number {
     return x + y;
+  }
+}
+
+class ScopedCalc implements IScopedCalc {
+  public add(session: string, x: number, y: number): number {
+    return (session === "douglas") ? 42 : (x + y);
   }
 }
 
@@ -197,6 +205,50 @@ describe("Rpc", () => {
                       /Unknown interface/);
     assert.isRejected(CtoA.callRemoteFunc("func@funkytown@foo", "Santa"),
                       /Unknown interface/);
+  });
+
+  describe("scoping", () => {
+    it("should support scoping", async () => {
+      const [backend, frontend] = createRpcPair();
+      frontend.setScope("session", "123");
+
+      backend.registerScopedFunc("x++", ["session"], (session: string, x: number) => x + 1);
+      backend.registerScopedFunc("session", ["session"], (session: string) => session);
+      assert.equal(await frontend.callRemoteFunc("x++", 42), 43);
+      assert.equal(await frontend.callRemoteFunc("session"), "123");
+
+      backend.registerImpl("plain-calc", new Calc(), checkersForICalc);
+      backend.registerScopedImpl("scoped-calc", ["session"], new ScopedCalc(),
+                                 checkersForIScopedCalc);
+      const plainCalc: ICalc = frontend.getStub<ICalc>("plain-calc");
+      assert.equal(await plainCalc.add(5, 6), 11);
+      const scopedCalc: ICalc = frontend.getStub<ICalc>("scoped-calc");
+      assert.equal(await scopedCalc.add(5, 6), 11);
+      frontend.setScope("session", "douglas");
+      assert.equal(await scopedCalc.add(5, 6), 42);
+    });
+
+    it("should support scoping with forwarding", async () => {
+      const [frontend, middleFront] = createRpcPair();
+      const [middleBack, backend] = createRpcPair();
+      middleFront.registerForwarder("backend", middleBack);
+      middleBack.setScope("session", "123");
+
+      backend.registerScopedFunc("x++", ["session"], (session: string, x: number) => x + 1);
+      backend.registerScopedFunc("session", ["session"], (session: string) => session);
+      assert.equal(await frontend.callRemoteFunc("x++@backend", 42), 43);
+      assert.equal(await frontend.callRemoteFunc("session@backend"), "123");
+
+      backend.registerImpl("plain-calc", new Calc(), checkersForICalc);
+      backend.registerScopedImpl("scoped-calc", ["session"], new ScopedCalc(),
+                                 checkersForIScopedCalc);
+      const plainCalc: ICalc = frontend.getStub<ICalc>("plain-calc@backend");
+      assert.equal(await plainCalc.add(5, 6), 11);
+      const scopedCalc: ICalc = frontend.getStub<ICalc>("scoped-calc@backend");
+      assert.equal(await scopedCalc.add(5, 6), 11);
+      middleBack.setScope("session", "douglas");
+      assert.equal(await scopedCalc.add(5, 6), 42);
+    });
   });
 });
 

@@ -89,6 +89,7 @@ export class Rpc extends EventEmitter {
   private _forwarders: Map<string, ImplementationFwd> = new Map();
   private _pendingCalls: Map<number, ICallObj> = new Map();
   private _nextRequestId = 1;
+  private _scope: {[name: string]: any} | undefined;
 
   /**
    * To use Rpc, you must call start() with a function that sends a message to the other side. If
@@ -129,6 +130,11 @@ export class Rpc extends EventEmitter {
     }
   }
 
+  public setScope(key: string, value: any) {
+    this._scope = this._scope || {};
+    this._scope[key] = value;
+  }
+
   /**
    * Messaging interface: send data to the other side, to be emitted there as a "message" event.
    */
@@ -148,12 +154,18 @@ export class Rpc extends EventEmitter {
   public registerImpl<Iface extends any>(name: string, impl: any): void;
   public registerImpl<Iface>(name: string, impl: Iface, checker: tic.Checker): void;
   public registerImpl(name: string, impl: any, checker?: tic.Checker): void {
+    this.registerScopedImpl(name, [], impl, checker!);
+  }
+
+  public registerScopedImpl<Iface extends any>(name: string, scopes: string[], impl: any): void;
+  public registerScopedImpl<Iface>(name: string, scopes: string[], impl: Iface, checker: tic.Checker): void;
+  public registerScopedImpl(name: string, scopes: string[], impl: any, checker?: tic.Checker): void {
     if (this._implMap.has(name)) {
       throw new Error(`Rpc.registerImpl has already been called for ${name}`);
     }
     const invokeImpl = (call: IMsgRpcCall) => impl[call.meth](...call.args);
     if (!checker) {
-      this._implMap.set(name, {name, invokeImpl, argsCheckers: null});
+      this._implMap.set(name, {name, invokeImpl, argsCheckers: null, scopes});
     } else {
       const ttype = getType(checker);
       if (!(ttype instanceof tic.TIface)) {
@@ -165,7 +177,7 @@ export class Rpc extends EventEmitter {
           argsCheckers[prop.name] = checker.methodArgs(prop.name);
         }
       }
-      this._implMap.set(name, {name, invokeImpl, argsCheckers});
+      this._implMap.set(name, {name, invokeImpl, argsCheckers, scopes});
     }
   }
 
@@ -175,6 +187,7 @@ export class Rpc extends EventEmitter {
       argsCheckers: null,
       invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker, fwdDest),
       forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(fwdDest, msg.data),
+      scopes: [],
     });
   }
 
@@ -236,7 +249,11 @@ export class Rpc extends EventEmitter {
    * Simple way to registers a function under a given name, with no argument checking.
    */
   public registerFunc(name: string, impl: (...args: any[]) => any): void {
-    return this.registerImpl<IAnyFunc>(name, {invoke: impl}, checkerAnyFunc);
+    return this.registerScopedFunc(name, [], impl);
+  }
+
+  public registerScopedFunc(name: string, scopes: string[], impl: (...args: any[]) => any): void {
+    return this.registerScopedImpl<IAnyFunc>(name, scopes, {invoke: impl}, checkerAnyFunc);
   }
 
   /**
@@ -270,6 +287,7 @@ export class Rpc extends EventEmitter {
       this._info(callObj, "RPC_CALLING");
       const msg: IMsgRpcCall = {mtype: MsgType.RpcCall, reqId, iface, meth, args};
       if (fwdDest) { msg.mdest = fwdDest; }
+      if (this._scope) { msg.scope = this._scope; }
       Promise.resolve().then(() => this._sendMessage(msg)).catch((err) => {
         this._pendingCalls.delete(reqId);
         reject(err);
@@ -300,6 +318,9 @@ export class Rpc extends EventEmitter {
   }
 
   private async _onMessageCall(call: IMsgRpcCall): Promise<void> {
+    if (this._scope) {
+      call.scope = Object.assign(call.scope || {}, this._scope);
+    }
     let impl: Implementation|undefined;
     if (call.mdest) {
       impl = this._forwarders.get(call.mdest);
@@ -312,7 +333,9 @@ export class Rpc extends EventEmitter {
         return this._failCall(call, "RPC_UNKNOWN_INTERFACE", "Unknown interface");
       }
     }
-
+    if (impl.scopes.length > 0) {
+      call.args = this._surfaceScopes(call, impl.scopes).concat(call.args);
+    }
     if (!impl.argsCheckers) {
       // No call or argument checking.
     } else {
@@ -408,6 +431,10 @@ export class Rpc extends EventEmitter {
       forwarder: name.substr(idx + 1),
     };
   }
+
+  private _surfaceScopes(call: IMsgRpcCall, scopes: string[]): any[] {
+    return scopes.map((name) => call.scope ? call.scope[name] : undefined);
+  }
 }
 
 // Helper to fail if we try to call a method or post a message before start() has been called.
@@ -421,6 +448,7 @@ interface Implementation {
   argsCheckers: null | {
     [name: string]: tic.Checker;
   };
+  scopes: string[];
 }
 
 interface ImplementationFwd extends Implementation {
