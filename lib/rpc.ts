@@ -155,7 +155,7 @@ export class Rpc extends EventEmitter {
     if (!checker) {
       this._implMap.set(name, {name, invokeImpl, argsCheckers: null});
     } else {
-      const ttype = getType(checker);
+      const ttype = checker.getType();
       if (!(ttype instanceof tic.TIface)) {
         throw new Error("Rpc.registerImpl requires a Checker for an interface");
       }
@@ -217,7 +217,7 @@ export class Rpc extends EventEmitter {
         },
       });
     } else {
-      const ttype = getType(checker);
+      const ttype = checker.getType();
       if (!(ttype instanceof tic.TIface)) {
         throw new Error("Rpc.getStub requires a Checker for an interface");
       }
@@ -466,8 +466,3 @@ const {IAnyFunc: checkerAnyFunc} = tic.createCheckers({IAnyFunc});
 const checkerAnyResult = checkerAnyFunc.methodResult("invoke");
 
 const anyChecker: tic.Checker = checkerAnyResult;
-
-// TODO Hack: expose this in ts-interface-checker
-function getType(checker: tic.Checker): tic.TType {
-  return (checker as any).ttype;
-}
