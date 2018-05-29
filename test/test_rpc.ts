@@ -198,6 +198,39 @@ describe("Rpc", () => {
     assert.isRejected(CtoA.callRemoteFunc("func@funkytown@foo", "Santa"),
                       /Unknown interface/);
   });
+
+  it("should support forwarding to *", async () => {
+
+   // |BtoA| <--> |AtoB|
+   // |    |
+   // |BtoC| <--> |CtoB|
+   // |    |
+   // |Bto*| <--> |DtoB|
+   //             |DtoE| <--> |EtoD|
+   //             |    |
+   //             |DtoF| <--> |FtoD|
+   const [BtoA   , AtoB] = createRpcPair();
+   const [BtoC   , CtoB] = createRpcPair();
+   const [BtoAll , DtoB] = createRpcPair();
+   const [DtoE   , EtoD] = createRpcPair();
+   const [DtoF   , FtoD] = createRpcPair();
+
+   BtoA.registerForwarder("my_c", BtoC);
+   BtoA.registerForwarder("*", BtoAll);
+   DtoB.registerForwarder("my_e", DtoE);
+   DtoB.registerForwarder("my_f", DtoF);
+
+   CtoB.registerImpl("my-greeting", new MyGreeting(" [From C]"));
+   AtoB.registerImpl("my-greeting", new MyGreeting(" [From A]"));
+   EtoD.registerImpl("my-greeting", new MyGreeting(" [From E]"));
+   FtoD.registerImpl("my-greeting", new MyGreeting(" [From F]"));
+
+   assert.equal(await AtoB.getStub<IGreet>("my-greeting@my_c").getGreeting("World"), "Hello, World! [From C]");
+   assert.equal(await AtoB.getStub<IGreet>("my-greeting@my_e").getGreeting("World"), "Hello, World! [From E]");
+   assert.equal(await AtoB.getStub<IGreet>("my-greeting@my_f").getGreeting("World"), "Hello, World! [From F]");
+
+  });
+
 });
 
 function createRpcPair(): [Rpc, Rpc] {
