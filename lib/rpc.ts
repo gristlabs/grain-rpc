@@ -47,10 +47,11 @@
  *
  * Forwarding
  * ----------
- * Rpc.registerForwarder() along with methods with "-Forward" suffix allow one Rpc object to
- * forward calls and messages to another Rpc object. The intended usage is when Rpc connects A to
- * B, and B to C. Then B can use registerForwarder to expose A's interfaces to C (or C's to A)
- * without having to know what exactly they are.
+ * Rpc.registerForwarder() along with methods with "-Forward" suffix allow one Rpc object to forward
+ * calls and messages to another Rpc object. The intended usage is when Rpc connects A to B, and B
+ * to C. Then B can use registerForwarder to expose A's interfaces to C (or C's to A) without having
+ * to know what exactly they are. A default forwarder can be registered using the '*' name.
+ *
  *
  * Instead of using getStubForward and callRemoteFuncForward, the forwarder name can be
  * appended to the interface name as "interfaceName@forwarderName" and the regular
@@ -58,6 +59,7 @@
  *   getStub("iface@forwarder")
  * is the same as:
  *   getStubForward("forwarder", "iface")
+ *
  *
  * E.g. with A.registerImpl("A-name", ...) and B.registerForwarder("b2a", A), we may now call
  * C.getStubForward("b2a", "A-name") to get a stub that will forward calls to A, as well as
@@ -169,13 +171,19 @@ export class Rpc extends EventEmitter {
     }
   }
 
-  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest: string = ""): void {
+  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest: string = (fwdName === "*" ? "*" : "")): void {
+    const passThru = fwdDest === "*";
     this._forwarders.set(fwdName, {
       name: "[FWD]" + fwdName,
       argsCheckers: null,
-      invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker, fwdDest),
-      forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(fwdDest, msg.data),
+      invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker,
+                                                        passThru ? (c.mdest || "") : fwdDest),
+      forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(passThru ? (msg.mdest || "") : fwdDest, msg.data),
     });
+  }
+
+  public unregisterForwarder(fwdName: string): void {
+    this._forwarders.delete(fwdName);
   }
 
   /**
@@ -288,7 +296,7 @@ export class Rpc extends EventEmitter {
 
   private _onCustomMessage(msg: IMsgCustom): void {
     if (msg.mdest) {
-      const impl = this._forwarders.get(msg.mdest);
+      const impl = this._forwarders.get(msg.mdest) || this._forwarders.get("*");
       if (!impl) {
         this._warn(null, "RPC_UNKNOWN_FORWARD_DEST", "Unknown forward destination");
       } else {
@@ -302,7 +310,7 @@ export class Rpc extends EventEmitter {
   private async _onMessageCall(call: IMsgRpcCall): Promise<void> {
     let impl: Implementation|undefined;
     if (call.mdest) {
-      impl = this._forwarders.get(call.mdest);
+      impl = this._forwarders.get(call.mdest) || this._forwarders.get("*");
       if (!impl) {
         return this._failCall(call, "RPC_UNKNOWN_FORWARD_DEST", "Unknown forward destination");
       }
