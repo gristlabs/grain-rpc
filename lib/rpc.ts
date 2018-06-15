@@ -171,17 +171,15 @@ export class Rpc extends EventEmitter {
     }
   }
 
-  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest: string = ""): void {
+  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest: string = (fwdName === "*" ? "*" : "")): void {
+    const passThru = fwdDest === "*";
     this._forwarders.set(fwdName, {
       name: "[FWD]" + fwdName,
       argsCheckers: null,
-      invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker, getFwdDest(c.mdest)),
-      forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(getFwdDest(msg.mdest), msg.data),
+      invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker,
+                                                        passThru ? (c.mdest || "") : fwdDest),
+      forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(passThru ? (msg.mdest || "") : fwdDest, msg.data),
     });
-    function getFwdDest(mdest: string|undefined): string {
-      // when forwarding to '*' use same fwdDest
-      return (fwdName === "*") ? mdest || "" : fwdDest;
-    }
   }
 
   public unregisterForwarder(fwdName: string): void {
