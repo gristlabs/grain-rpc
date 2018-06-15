@@ -176,8 +176,8 @@ export class Rpc extends EventEmitter {
     this._forwarders.set(fwdName, {
       name: "[FWD]" + fwdName,
       argsCheckers: null,
-      invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker,
-                                                        passThru ? (c.mdest || "") : fwdDest),
+      invokeImpl: (c: IMsgRpcCall) => destRpc.makeCall(c.iface, c.meth, c.args, anyChecker,
+                                                       passThru ? (c.mdest || "") : fwdDest),
       forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(passThru ? (msg.mdest || "") : fwdDest, msg.data),
     });
   }
@@ -221,7 +221,7 @@ export class Rpc extends EventEmitter {
             // If user really wants to proxy "then", they can write a checker.
             return undefined;
           }
-          return (...args: any[]) => this._makeCall(name, property, args, anyChecker, fwdDest);
+          return (...args: any[]) => this.makeCall(name, property, args, anyChecker, fwdDest);
         },
       });
     } else {
@@ -233,7 +233,7 @@ export class Rpc extends EventEmitter {
       for (const prop of ttype.props) {
         if (prop.ttype instanceof tic.TFunc) {
           const resultChecker = checker.methodResult(prop.name);
-          api[prop.name] = (...args: any[]) => this._makeCall(name, prop.name, args, resultChecker, fwdDest);
+          api[prop.name] = (...args: any[]) => this.makeCall(name, prop.name, args, resultChecker, fwdDest);
         }
       }
       return api;
@@ -263,18 +263,18 @@ export class Rpc extends EventEmitter {
   }
 
   public callRemoteFuncForward(fwdDest: string, name: string, ...args: any[]): Promise<any> {
-    return this._makeCall(name, "invoke", args, anyChecker, fwdDest);
+    return this.makeCall(name, "invoke", args, anyChecker, fwdDest);
   }
 
-  private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
-                    fwdDest: string): Promise<any> {
+  protected makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
+                     fwdDest: string): Promise<any> {
     return new Promise((resolve, reject) => {
       const reqId = this._nextRequestId++;
       const callObj: ICallObj = {reqId, iface, meth, resolve, reject, resultChecker};
       this._pendingCalls.set(reqId, callObj);
 
-      // Send the Call message. If the sending fails, reject the _makeCall promise. If it
-      // succeeds, we save {resolve,reject} to resolve _makeCall when we get back a response.
+      // Send the Call message. If the sending fails, reject the makeCall promise. If it
+      // succeeds, we save {resolve,reject} to resolve makeCall when we get back a response.
       this._info(callObj, "RPC_CALLING");
       const msg: IMsgRpcCall = {mtype: MsgType.RpcCall, reqId, iface, meth, args};
       if (fwdDest) { msg.mdest = fwdDest; }
