@@ -1,7 +1,8 @@
 import {assert, use} from "chai";
 import * as chaiAsPromised from "chai-as-promised";
-import {createCheckers} from "ts-interface-checker";
 import {EventEmitter} from "events";
+import * as sinon from "sinon";
+import {createCheckers} from "ts-interface-checker";
 import {Rpc} from "../lib/rpc";
 import {ICalc} from "./ICalc";
 import ICalcTI from "./ICalc-ti";
@@ -77,7 +78,7 @@ describe("Rpc", () => {
       rpc.start((msg) => rpc.receiveMessage(msg));
       rpc.registerImpl<ICalc>("calc", new Calc());
       const stub = Promise.resolve(rpc.getStub<ICalc>("calc"));
-      assert.equal(await stub.then(calc => calc.add(4, 5)), 9);
+      assert.equal(await stub.then((calc) => calc.add(4, 5)), 9);
     });
 
   });
@@ -229,6 +230,29 @@ describe("Rpc", () => {
    assert.equal(await AtoB.getStub<IGreet>("my-greeting@my_e").getGreeting("World"), "Hello, World! [From E]");
    assert.equal(await AtoB.getStub<IGreet>("my-greeting@my_f").getGreeting("World"), "Hello, World! [From F]");
 
+  });
+
+  it("should support wrapping calls", async () => {
+    const before = sinon.spy();
+    const after = sinon.spy();
+    const rpc = new Rpc({...defaults, callWrapper: async (makeCall: () => Promise<any>) => {
+      before();
+      try {
+        return await makeCall();
+      } finally {
+        after();
+      }
+    }});
+    rpc.start(rpc.receiveMessage.bind(rpc));
+    rpc.registerImpl<ICalc>("calc", new Calc());
+    const stub = rpc.getStub<ICalc>("calc");
+    assert(stub);
+    await stub.add(4, 5);
+    assert.equal(before.callCount, 1);
+    assert.equal(after.callCount, 1);
+    await rpc.postMessage("test");
+    assert.equal(before.callCount, 2);
+    assert.equal(after.callCount, 2);
   });
 
 });

@@ -83,10 +83,13 @@ interface IForwardingName {
   name: string;
 }
 
+export type ICallWrapper = (call: () => any) => any;
+
 export class Rpc extends EventEmitter {
   private _sendMessage: SendMessageCB;
   private _inactiveQueue: IMessage[] | null;
   private _logger: IRpcLogger;
+  private _callWrapper: ICallWrapper;
   private _implMap: Map<string, Implementation> = new Map();
   private _forwarders: Map<string, ImplementationFwd> = new Map();
   private _pendingCalls: Map<number, ICallObj> = new Map();
@@ -97,11 +100,12 @@ export class Rpc extends EventEmitter {
    * you pass in such a function to the constructor, it's the same as calling start() right away.
    * You must also call receiveMessage() for every message received from the other side.
    */
-  constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB} = {}) {
+  constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB, callWrapper?: ICallWrapper} = {}) {
     super();
-    const {logger = console, sendMessage = inactiveSend} = options;
+    const {logger = console, sendMessage = inactiveSend, callWrapper = (call: () => any) => call()} = options;
     this._logger = logger;
     this._sendMessage = sendMessage;
+    this._callWrapper = callWrapper;
     this._inactiveQueue = (this._sendMessage === inactiveSend) ? [] : null;
   }
 
@@ -139,7 +143,7 @@ export class Rpc extends EventEmitter {
   public async postMessageForward(fwdDest: string, data: any): Promise<void> {
     const msg: IMsgCustom = {mtype: MsgType.Custom, data};
     if (fwdDest) { msg.mdest = fwdDest; }
-    await this._sendMessage(msg);
+    await this._callWrapper(() => this._sendMessage(msg));
   }
 
   /**
@@ -176,8 +180,8 @@ export class Rpc extends EventEmitter {
     this._forwarders.set(fwdName, {
       name: "[FWD]" + fwdName,
       argsCheckers: null,
-      invokeImpl: (c: IMsgRpcCall) => destRpc.makeCall(c.iface, c.meth, c.args, anyChecker,
-                                                       passThru ? (c.mdest || "") : fwdDest),
+      invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker,
+                                                        passThru ? (c.mdest || "") : fwdDest),
       forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(passThru ? (msg.mdest || "") : fwdDest, msg.data),
     });
   }
@@ -221,7 +225,7 @@ export class Rpc extends EventEmitter {
             // If user really wants to proxy "then", they can write a checker.
             return undefined;
           }
-          return (...args: any[]) => this.makeCall(name, property, args, anyChecker, fwdDest);
+          return (...args: any[]) => this._makeCall(name, property, args, anyChecker, fwdDest);
         },
       });
     } else {
@@ -233,7 +237,7 @@ export class Rpc extends EventEmitter {
       for (const prop of ttype.props) {
         if (prop.ttype instanceof tic.TFunc) {
           const resultChecker = checker.methodResult(prop.name);
-          api[prop.name] = (...args: any[]) => this.makeCall(name, prop.name, args, resultChecker, fwdDest);
+          api[prop.name] = (...args: any[]) => this._makeCall(name, prop.name, args, resultChecker, fwdDest);
         }
       }
       return api;
@@ -263,18 +267,18 @@ export class Rpc extends EventEmitter {
   }
 
   public callRemoteFuncForward(fwdDest: string, name: string, ...args: any[]): Promise<any> {
-    return this.makeCall(name, "invoke", args, anyChecker, fwdDest);
+    return this._makeCall(name, "invoke", args, anyChecker, fwdDest);
   }
 
-  protected makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
-                     fwdDest: string): Promise<any> {
-    return new Promise((resolve, reject) => {
+  private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
+                    fwdDest: string): Promise<any> {
+    return this._callWrapper(() => new Promise((resolve, reject) => {
       const reqId = this._nextRequestId++;
       const callObj: ICallObj = {reqId, iface, meth, resolve, reject, resultChecker};
       this._pendingCalls.set(reqId, callObj);
 
-      // Send the Call message. If the sending fails, reject the makeCall promise. If it
-      // succeeds, we save {resolve,reject} to resolve makeCall when we get back a response.
+      // Send the Call message. If the sending fails, reject the _makeCall promise. If it
+      // succeeds, we save {resolve,reject} to resolve _makeCall when we get back a response.
       this._info(callObj, "RPC_CALLING");
       const msg: IMsgRpcCall = {mtype: MsgType.RpcCall, reqId, iface, meth, args};
       if (fwdDest) { msg.mdest = fwdDest; }
@@ -282,7 +286,7 @@ export class Rpc extends EventEmitter {
         this._pendingCalls.delete(reqId);
         reject(err);
       });
-    });
+    }));
   }
 
   private _dispatch(msg: IMessage): void {
