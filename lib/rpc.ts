@@ -83,7 +83,9 @@ interface IForwardingName {
   name: string;
 }
 
-export type ICallWrapper = (call: () => any) => any;
+export type ICallWrapper = (callFunc: () => Promise<any>) => Promise<any>;
+
+const plainCall: ICallWrapper = (callFunc) => callFunc();
 
 export class Rpc extends EventEmitter {
   private _sendMessage: SendMessageCB;
@@ -100,9 +102,10 @@ export class Rpc extends EventEmitter {
    * you pass in such a function to the constructor, it's the same as calling start() right away.
    * You must also call receiveMessage() for every message received from the other side.
    */
-  constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB, callWrapper?: ICallWrapper} = {}) {
+  constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB,
+                        callWrapper?: ICallWrapper} = {}) {
     super();
-    const {logger = console, sendMessage = inactiveSend, callWrapper = (call: () => any) => call()} = options;
+    const {logger = console, sendMessage = inactiveSend, callWrapper = plainCall} = options;
     this._logger = logger;
     this._sendMessage = sendMessage;
     this._callWrapper = callWrapper;
@@ -143,7 +146,7 @@ export class Rpc extends EventEmitter {
   public async postMessageForward(fwdDest: string, data: any): Promise<void> {
     const msg: IMsgCustom = {mtype: MsgType.Custom, data};
     if (fwdDest) { msg.mdest = fwdDest; }
-    await this._callWrapper(() => this._sendMessage(msg));
+    await this._sendMessage(msg);
   }
 
   /**
@@ -270,9 +273,9 @@ export class Rpc extends EventEmitter {
     return this._makeCall(name, "invoke", args, anyChecker, fwdDest);
   }
 
-  private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
-                    fwdDest: string): Promise<any> {
-    return this._callWrapper(() => new Promise((resolve, reject) => {
+  private _makeCallRaw(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
+                       fwdDest: string): Promise<any> {
+    return new Promise((resolve, reject) => {
       const reqId = this._nextRequestId++;
       const callObj: ICallObj = {reqId, iface, meth, resolve, reject, resultChecker};
       this._pendingCalls.set(reqId, callObj);
@@ -286,7 +289,12 @@ export class Rpc extends EventEmitter {
         this._pendingCalls.delete(reqId);
         reject(err);
       });
-    }));
+    });
+  }
+
+  private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
+                    fwdDest: string): Promise<any> {
+    return this._callWrapper(() => this._makeCallRaw(iface, meth, args, resultChecker, fwdDest));
   }
 
   private _dispatch(msg: IMessage): void {

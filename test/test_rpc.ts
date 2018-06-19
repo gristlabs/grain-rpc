@@ -250,9 +250,6 @@ describe("Rpc", () => {
     await stub.add(4, 5);
     assert.equal(before.callCount, 1);
     assert.equal(after.callCount, 1);
-    await rpc.postMessage("test");
-    assert.equal(before.callCount, 2);
-    assert.equal(after.callCount, 2);
   });
 
 });
