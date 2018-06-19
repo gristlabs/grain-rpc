@@ -83,10 +83,15 @@ interface IForwardingName {
   name: string;
 }
 
+export type ICallWrapper = (callFunc: () => Promise<any>) => Promise<any>;
+
+const plainCall: ICallWrapper = (callFunc) => callFunc();
+
 export class Rpc extends EventEmitter {
   private _sendMessage: SendMessageCB;
   private _inactiveQueue: IMessage[] | null;
   private _logger: IRpcLogger;
+  private _callWrapper: ICallWrapper;
   private _implMap: Map<string, Implementation> = new Map();
   private _forwarders: Map<string, ImplementationFwd> = new Map();
   private _pendingCalls: Map<number, ICallObj> = new Map();
@@ -97,11 +102,13 @@ export class Rpc extends EventEmitter {
    * you pass in such a function to the constructor, it's the same as calling start() right away.
    * You must also call receiveMessage() for every message received from the other side.
    */
-  constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB} = {}) {
+  constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB,
+                        callWrapper?: ICallWrapper} = {}) {
     super();
-    const {logger = console, sendMessage = inactiveSend} = options;
+    const {logger = console, sendMessage = inactiveSend, callWrapper = plainCall} = options;
     this._logger = logger;
     this._sendMessage = sendMessage;
+    this._callWrapper = callWrapper;
     this._inactiveQueue = (this._sendMessage === inactiveSend) ? [] : null;
   }
 
@@ -266,8 +273,8 @@ export class Rpc extends EventEmitter {
     return this._makeCall(name, "invoke", args, anyChecker, fwdDest);
   }
 
-  private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
-                    fwdDest: string): Promise<any> {
+  private _makeCallRaw(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
+                       fwdDest: string): Promise<any> {
     return new Promise((resolve, reject) => {
       const reqId = this._nextRequestId++;
       const callObj: ICallObj = {reqId, iface, meth, resolve, reject, resultChecker};
@@ -283,6 +290,11 @@ export class Rpc extends EventEmitter {
         reject(err);
       });
     });
+  }
+
+  private _makeCall(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
+                    fwdDest: string): Promise<any> {
+    return this._callWrapper(() => this._makeCallRaw(iface, meth, args, resultChecker, fwdDest));
   }
 
   private _dispatch(msg: IMessage): void {
