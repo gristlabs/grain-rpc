@@ -83,11 +83,16 @@ interface IForwardingName {
   name: string;
 }
 
+export interface IForwarder {
+  forwardCall: (c: IMsgRpcCall) => Promise<any>;
+  forwardMessage: (msg: IMsgCustom) => Promise<any>;
+}
+
 export type ICallWrapper = (callFunc: () => Promise<any>) => Promise<any>;
 
 const plainCall: ICallWrapper = (callFunc) => callFunc();
 
-export class Rpc extends EventEmitter {
+export class Rpc extends EventEmitter implements IForwarder {
   private _sendMessage: SendMessageCB;
   private _inactiveQueue: IMessage[] | null;
   private _logger: IRpcLogger;
@@ -178,14 +183,13 @@ export class Rpc extends EventEmitter {
     }
   }
 
-  public registerForwarder(fwdName: string, destRpc: Rpc, fwdDest: string = (fwdName === "*" ? "*" : "")): void {
+  public registerForwarder(fwdName: string, dest: IForwarder, fwdDest: string = (fwdName === "*" ? "*" : "")): void {
     const passThru = fwdDest === "*";
     this._forwarders.set(fwdName, {
       name: "[FWD]" + fwdName,
       argsCheckers: null,
-      invokeImpl: (c: IMsgRpcCall) => destRpc._makeCall(c.iface, c.meth, c.args, anyChecker,
-                                                        passThru ? (c.mdest || "") : fwdDest),
-      forwardMessage: (msg: IMsgCustom) => destRpc.postMessageForward(passThru ? (msg.mdest || "") : fwdDest, msg.data),
+      invokeImpl: (c: IMsgRpcCall) => dest.forwardCall({...c, mdest: passThru ? c.mdest : fwdDest}),
+      forwardMessage: (msg: IMsgCustom) => dest.forwardMessage({...msg, mdest: passThru ? msg.mdest : fwdDest}),
     });
   }
 
@@ -271,6 +275,14 @@ export class Rpc extends EventEmitter {
 
   public callRemoteFuncForward(fwdDest: string, name: string, ...args: any[]): Promise<any> {
     return this._makeCall(name, "invoke", args, anyChecker, fwdDest);
+  }
+
+  public forwardCall(c: IMsgRpcCall): Promise<any> {
+    return this._makeCall(c.iface, c.meth, c.args, anyChecker, c.mdest || "");
+  }
+
+  public forwardMessage(msg: IMsgCustom): Promise<any> {
+    return this.postMessageForward(msg.mdest || "", msg.data);
   }
 
   private _makeCallRaw(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
