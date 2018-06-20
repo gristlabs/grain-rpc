@@ -83,7 +83,7 @@ interface IForwardingName {
   name: string;
 }
 
-export interface IForwarder {
+export interface IForwarderDest {
   forwardCall: (c: IMsgRpcCall) => Promise<any>;
   forwardMessage: (msg: IMsgCustom) => Promise<any>;
 }
@@ -92,7 +92,7 @@ export type ICallWrapper = (callFunc: () => Promise<any>) => Promise<any>;
 
 const plainCall: ICallWrapper = (callFunc) => callFunc();
 
-export class Rpc extends EventEmitter implements IForwarder {
+export class Rpc extends EventEmitter implements IForwarderDest {
   private _sendMessage: SendMessageCB;
   private _inactiveQueue: IMessage[] | null;
   private _logger: IRpcLogger;
@@ -183,7 +183,8 @@ export class Rpc extends EventEmitter implements IForwarder {
     }
   }
 
-  public registerForwarder(fwdName: string, dest: IForwarder, fwdDest: string = (fwdName === "*" ? "*" : "")): void {
+  public registerForwarder(fwdName: string, dest: IForwarderDest,
+                           fwdDest: string = (fwdName === "*" ? "*" : "")): void {
     const passThru = fwdDest === "*";
     this._forwarders.set(fwdName, {
       name: "[FWD]" + fwdName,
