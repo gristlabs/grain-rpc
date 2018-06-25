@@ -93,8 +93,9 @@ export type ICallWrapper = (callFunc: () => Promise<any>) => Promise<any>;
 const plainCall: ICallWrapper = (callFunc) => callFunc();
 
 export class Rpc extends EventEmitter implements IForwarderDest {
-  private _sendMessage: SendMessageCB;
-  private _inactiveQueue: IMessage[] | null;
+  private _sendMessageCB: SendMessageCB | null;
+  private _inactiveQueue: IMessage[] | null; // queue of received message
+  private _inactiveSendQueue: IMessage[]; // queue of messages to be sent
   private _logger: IRpcLogger;
   private _callWrapper: ICallWrapper;
   private _implMap: Map<string, Implementation> = new Map();
@@ -110,11 +111,12 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB,
                         callWrapper?: ICallWrapper} = {}) {
     super();
-    const {logger = console, sendMessage = inactiveSend, callWrapper = plainCall} = options;
+    const {logger = console, sendMessage = null, callWrapper = plainCall} = options;
     this._logger = logger;
-    this._sendMessage = sendMessage;
+    this._sendMessageCB = sendMessage;
     this._callWrapper = callWrapper;
-    this._inactiveQueue = (this._sendMessage === inactiveSend) ? [] : null;
+    this._inactiveQueue = sendMessage ? null : [];
+    this._inactiveSendQueue = [];
   }
 
   /**
@@ -129,18 +131,31 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   }
 
   /**
-   * Until start() is called, received messages are queued. This gives you an opportunity to
-   * register implementations and add "message" listeners without the risk of missing messages,
+   * Until start() is called, received and sent messages are queued. This gives you an opportunity
+   * to register implementations and add "message" listeners without the risk of missing messages,
    * even if receiveMessage() has already started being called.
    */
   public start(sendMessage: SendMessageCB) {
-    this._sendMessage = sendMessage;
+    this._sendMessageCB = sendMessage;
     if (this._inactiveQueue) {
       for (const msg of this._inactiveQueue) {
         this._dispatch(msg);    // We need to be careful not to throw from here.
       }
       this._inactiveQueue = null;
     }
+    for (const msg of this._inactiveSendQueue) {
+      sendMessage(msg);
+    }
+    this._inactiveSendQueue = [];
+  }
+
+  /**
+   * Calling stop() resume the same state as before start was called: received and sent messages are
+   * queued.
+   */
+  public stop() {
+    this._inactiveQueue = [];
+    this._sendMessageCB = null;
   }
 
   /**
@@ -212,9 +227,9 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    *
    * Interface names can be followed by a "@<forwarder>" part
    */
-  public getStub<Iface extends any>(name: string): any;
+  public getStub<Iface extends any>(name: string): Iface;
   public getStub<Iface>(name: string, checker: tic.Checker): Iface;
-  public getStub(name: string, checker?: tic.Checker): any {
+  public getStub<Iface>(name: string, checker?: tic.Checker): Iface {
     const parts = this._parseName(name);
     return this.getStubForward(parts.forwarder, parts.name, checker!);
   }
@@ -284,6 +299,14 @@ export class Rpc extends EventEmitter implements IForwarderDest {
 
   public forwardMessage(msg: IMsgCustom): Promise<any> {
     return this.postMessageForward(msg.mdest || "", msg.data);
+  }
+
+  private _sendMessage(msg: IMessage): void {
+    if (!this._sendMessageCB) {
+      this._inactiveSendQueue.push(msg);
+    } else {
+      this._sendMessageCB(msg);
+    }
   }
 
   private _makeCallRaw(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
@@ -441,11 +464,6 @@ export class Rpc extends EventEmitter implements IForwarderDest {
       forwarder: name.substr(idx + 1),
     };
   }
-}
-
-// Helper to fail if we try to call a method or post a message before start() has been called.
-function inactiveSend(msg: IMessage): void {
-  throw new Error("Rpc cannot be used before start() has been called");
 }
 
 interface Implementation {
