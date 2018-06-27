@@ -93,8 +93,9 @@ export type ICallWrapper = (callFunc: () => Promise<any>) => Promise<any>;
 const plainCall: ICallWrapper = (callFunc) => callFunc();
 
 export class Rpc extends EventEmitter implements IForwarderDest {
-  private _sendMessage: SendMessageCB;
-  private _inactiveQueue: IMessage[] | null;
+  private _sendMessageCB: SendMessageCB | null;
+  private _inactiveRecvQueue: IMessage[] = []; // queue of received message
+  private _inactiveSendQueue: IMessage[] = []; // queue of messages to be sent
   private _logger: IRpcLogger;
   private _callWrapper: ICallWrapper;
   private _implMap: Map<string, Implementation> = new Map();
@@ -110,37 +111,41 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB,
                         callWrapper?: ICallWrapper} = {}) {
     super();
-    const {logger = console, sendMessage = inactiveSend, callWrapper = plainCall} = options;
+    const {logger = console, sendMessage = null, callWrapper = plainCall} = options;
     this._logger = logger;
-    this._sendMessage = sendMessage;
+    this._sendMessageCB = sendMessage;
     this._callWrapper = callWrapper;
-    this._inactiveQueue = (this._sendMessage === inactiveSend) ? [] : null;
   }
 
   /**
    * To use Rpc, call this for every message received from the other side of the channel.
    */
   public receiveMessage(msg: any): void {
-    if (this._inactiveQueue) {
-      this._inactiveQueue.push(msg);
+    if (!this._sendMessageCB) {
+      this._inactiveRecvQueue.push(msg);
     } else {
       this._dispatch(msg);
     }
   }
 
   /**
-   * Until start() is called, received messages are queued. This gives you an opportunity to
-   * register implementations and add "message" listeners without the risk of missing messages,
+   * Until start() is called, received and sent messages are queued. This gives you an opportunity
+   * to register implementations and add "message" listeners without the risk of missing messages,
    * even if receiveMessage() has already started being called.
    */
   public start(sendMessage: SendMessageCB) {
-    this._sendMessage = sendMessage;
-    if (this._inactiveQueue) {
-      for (const msg of this._inactiveQueue) {
-        this._dispatch(msg);    // We need to be careful not to throw from here.
-      }
-      this._inactiveQueue = null;
-    }
+    // Message sent by `_dispatch(...)` are appended to the send queue
+    processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
+    processQueue(this._inactiveSendQueue, sendMessage);
+    this._sendMessageCB = sendMessage;
+  }
+
+  /**
+   * Calling stop() resume the same state as before start was called: received and sent messages are
+   * queued.
+   */
+  public stop() {
+    this._sendMessageCB = null;
   }
 
   /**
@@ -212,9 +217,9 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    *
    * Interface names can be followed by a "@<forwarder>" part
    */
-  public getStub<Iface extends any>(name: string): any;
+  public getStub<Iface extends any>(name: string): Iface;
   public getStub<Iface>(name: string, checker: tic.Checker): Iface;
-  public getStub(name: string, checker?: tic.Checker): any {
+  public getStub<Iface>(name: string, checker?: tic.Checker): Iface {
     const parts = this._parseName(name);
     return this.getStubForward(parts.forwarder, parts.name, checker!);
   }
@@ -284,6 +289,14 @@ export class Rpc extends EventEmitter implements IForwarderDest {
 
   public forwardMessage(msg: IMsgCustom): Promise<any> {
     return this.postMessageForward(msg.mdest || "", msg.data);
+  }
+
+  private _sendMessage(msg: IMessage): PromiseLike<void> | void {
+    if (!this._sendMessageCB) {
+      this._inactiveSendQueue.push(msg);
+    } else {
+      return this._sendMessageCB(msg);
+    }
   }
 
   private _makeCallRaw(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
@@ -443,11 +456,6 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   }
 }
 
-// Helper to fail if we try to call a method or post a message before start() has been called.
-function inactiveSend(msg: IMessage): void {
-  throw new Error("Rpc cannot be used before start() has been called");
-}
-
 interface Implementation {
   name: string;
   invokeImpl: (call: IMsgRpcCall) => Promise<any>;
@@ -499,3 +507,17 @@ const {IAnyFunc: checkerAnyFunc} = tic.createCheckers({IAnyFunc});
 const checkerAnyResult = checkerAnyFunc.methodResult("invoke");
 
 const anyChecker: tic.Checker = checkerAnyResult;
+
+/**
+ * A little helper that processes message queues when starting an rpc instance.
+ */
+function processQueue(queue: IMessage[], processFunc: (msg: IMessage) => void) {
+  let i = 0;
+  try {
+    for (; i < queue.length; ++i) {
+      processFunc(queue[i]);
+    }
+  } finally {
+    queue.splice(0, i);
+  }
+}

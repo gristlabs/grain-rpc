@@ -105,14 +105,14 @@ describe("Rpc", () => {
       rpc.start((msg) => rpc.receiveMessage(msg));
       rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
       const stub = rpc.getStub<ICalc>("calc");
-      await assert.isRejected(stub.additionify(4, 5), /Unknown method/);
+      await assert.isRejected((stub as any).additionify(4, 5), /Unknown method/);
     });
 
     it("should catch bad + missing arguments at implementation", async () => {
       const rpc = new Rpc(defaults);
       rpc.start((msg) => rpc.receiveMessage(msg));
       rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
-      const stub = rpc.getStub<ICalc>("calc");
+      const stub = rpc.getStub<ICalc>("calc") as any;
       await assert.isRejected(stub.add("hello", 5), /not a number/);
       await assert.isRejected(stub.add(), /value.x is missing/);
       await assert.isRejected(stub.add(1), /value.y is missing/);
@@ -250,6 +250,75 @@ describe("Rpc", () => {
     await stub.add(4, 5);
     assert.equal(before.callCount, 1);
     assert.equal(after.callCount, 1);
+  });
+
+  it("should support queueing messages when rpc is inactive", async () => {
+    const aRpc = new Rpc(defaults);
+    const bRpc = new Rpc(defaults);
+    bRpc.start((msg) => aRpc.receiveMessage(msg));
+
+    aRpc.registerImpl<IGreet>("greet", new MyGreeting(" from a"));
+    bRpc.registerImpl<IGreet>("greet", new MyGreeting(" from b"));
+
+    const bStub = bRpc.getStub<IGreet>("greet");
+    const aStub = aRpc.getStub<IGreet>("greet");
+
+    assert(bStub);
+    assert(aStub);
+    let noneResolved = true;
+    let bGreeting = bStub.getGreeting("Santa").then((res) => (noneResolved = false, res));
+    let aGreeting = aStub.getGreeting("Santa").then((res) => (noneResolved = false, res));
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(noneResolved, true);
+    aRpc.start((msg) => bRpc.receiveMessage(msg));
+    assert.equal(await bGreeting, "Hello, Santa! from a");
+    assert.equal(await aGreeting, "Hello, Santa! from b");
+
+    aRpc.stop();
+    noneResolved = true;
+    bGreeting = bStub.getGreeting("Bob").then((res) => (noneResolved = false, res));
+    aGreeting = aStub.getGreeting("Bob").then((res) => (noneResolved = false, res));
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(noneResolved, true);
+    aRpc.start((msg) => bRpc.receiveMessage(msg));
+    assert.equal(await bGreeting, "Hello, Bob! from a");
+    assert.equal(await aGreeting, "Hello, Bob! from b");
+
+  });
+
+  it("should behave nicely if `start()` throws", async () => {
+    const rpc = new Rpc(defaults);
+
+    // 3 messages are sent while inactive
+    rpc.postMessage("x");
+    rpc.postMessage("y");
+    rpc.postMessage("z");
+
+    let e = "";
+    const stub = sinon.stub();
+    stub.withArgs("y").throws("y throws"); // the 2 message will throw
+
+    // let's start rpc
+    try {
+      rpc.start((msg) => stub((msg as any).data));
+    } catch (_e) {
+      e = _e;
+    }
+
+    // checks that start did process 'x' and 'y' and throws
+    assert.equal(stub.callCount, 2);
+    assert.equal(stub.calledWith("x"), true);
+    assert.equal(stub.calledWith("y"), true);
+    assert.equal(e, "y throws");
+
+    const spy = sinon.spy();
+    rpc.start((msg) => spy((msg as any).data)); // let's start again
+
+    // check that `start()` resume sending message from where it was previously interrupted.
+    assert.equal(spy.calledWith("z"), true);
+
   });
 
 });
