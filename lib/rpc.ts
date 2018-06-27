@@ -94,8 +94,8 @@ const plainCall: ICallWrapper = (callFunc) => callFunc();
 
 export class Rpc extends EventEmitter implements IForwarderDest {
   private _sendMessageCB: SendMessageCB | null;
-  private _inactiveQueue: IMessage[] | null; // queue of received message
-  private _inactiveSendQueue: IMessage[]; // queue of messages to be sent
+  private _inactiveRecvQueue: IMessage[] = []; // queue of received message
+  private _inactiveSendQueue: IMessage[] = []; // queue of messages to be sent
   private _logger: IRpcLogger;
   private _callWrapper: ICallWrapper;
   private _implMap: Map<string, Implementation> = new Map();
@@ -115,16 +115,14 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     this._logger = logger;
     this._sendMessageCB = sendMessage;
     this._callWrapper = callWrapper;
-    this._inactiveQueue = sendMessage ? null : [];
-    this._inactiveSendQueue = [];
   }
 
   /**
    * To use Rpc, call this for every message received from the other side of the channel.
    */
   public receiveMessage(msg: any): void {
-    if (this._inactiveQueue) {
-      this._inactiveQueue.push(msg);
+    if (!this._sendMessageCB) {
+      this._inactiveRecvQueue.push(msg);
     } else {
       this._dispatch(msg);
     }
@@ -137,16 +135,19 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    */
   public start(sendMessage: SendMessageCB) {
     this._sendMessageCB = sendMessage;
-    if (this._inactiveQueue) {
-      for (const msg of this._inactiveQueue) {
-        this._dispatch(msg);    // We need to be careful not to throw from here.
+    try {
+      // dispatch message received while inactive
+      while (this._inactiveRecvQueue.length) {
+        this._dispatch(this._inactiveRecvQueue.shift()!);
       }
-      this._inactiveQueue = null;
+      // send messages sent while inactive
+      while (this._inactiveSendQueue.length) {
+        sendMessage(this._inactiveSendQueue.shift()!);
+      }
+    } catch {
+      // If an exception is thrown, lets propagate and leave state unchanged.
+      this._sendMessageCB = null;
     }
-    for (const msg of this._inactiveSendQueue) {
-      sendMessage(msg);
-    }
-    this._inactiveSendQueue = [];
   }
 
   /**
@@ -154,7 +155,6 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    * queued.
    */
   public stop() {
-    this._inactiveQueue = [];
     this._sendMessageCB = null;
   }
 

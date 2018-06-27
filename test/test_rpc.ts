@@ -255,7 +255,6 @@ describe("Rpc", () => {
   it("should support queueing messages when rpc is inactive", async () => {
     const aRpc = new Rpc(defaults);
     const bRpc = new Rpc(defaults);
-    // aRpc.start((msg) => bRpc.receiveMessage(msg));
     bRpc.start((msg) => aRpc.receiveMessage(msg));
 
     aRpc.registerImpl<IGreet>("greet", new MyGreeting(" from a"));
@@ -266,27 +265,26 @@ describe("Rpc", () => {
 
     assert(bStub);
     assert(aStub);
-    let bGreeting = bStub.getGreeting("Santa");
-    let aGreeting = aStub.getGreeting("Santa");
-
-    // wait only to make sure that both stubs are actually created without any errors, before we do
-    // actually start a rpc.
-    await new Promise((resolve) => setTimeout(resolve, 1));
-
-    aRpc.start((msg) => bRpc.receiveMessage(msg));
-    assert.equal(await bGreeting, "Hello, Santa! from a");
-    assert.equal(await aGreeting, "Hello, Santa! from b");
-
-    aRpc.stop();
     let noneResolved = true;
-    bGreeting = bStub.getGreeting("Santa").then((res) => (noneResolved = false, res));
-    aGreeting = aStub.getGreeting("Santa").then((res) => (noneResolved = false, res));
+    let bGreeting = bStub.getGreeting("Santa").then((res) => (noneResolved = false, res));
+    let aGreeting = aStub.getGreeting("Santa").then((res) => (noneResolved = false, res));
 
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(noneResolved, true);
     aRpc.start((msg) => bRpc.receiveMessage(msg));
     assert.equal(await bGreeting, "Hello, Santa! from a");
     assert.equal(await aGreeting, "Hello, Santa! from b");
+
+    aRpc.stop();
+    noneResolved = true;
+    bGreeting = bStub.getGreeting("Bob").then((res) => (noneResolved = false, res));
+    aGreeting = aStub.getGreeting("Bob").then((res) => (noneResolved = false, res));
+
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    assert.equal(noneResolved, true);
+    aRpc.start((msg) => bRpc.receiveMessage(msg));
+    assert.equal(await bGreeting, "Hello, Bob! from a");
+    assert.equal(await aGreeting, "Hello, Bob! from b");
 
   });
 
