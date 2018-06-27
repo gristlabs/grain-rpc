@@ -138,16 +138,6 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
     processQueue(this._inactiveSendQueue, sendMessage);
     this._sendMessageCB = sendMessage;
-    function processQueue(queue: IMessage[], processFunc: (msg: IMessage) => any) {
-      let i = 0;
-      try {
-        for (; i < queue.length; ++i) {
-          processFunc(queue[i]);
-        }
-      } finally {
-        queue.splice(0, i);
-      }
-    }
   }
 
   /**
@@ -301,11 +291,11 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     return this.postMessageForward(msg.mdest || "", msg.data);
   }
 
-  private _sendMessage(msg: IMessage): void {
+  private _sendMessage(msg: IMessage): PromiseLike<void> | void {
     if (!this._sendMessageCB) {
       this._inactiveSendQueue.push(msg);
     } else {
-      this._sendMessageCB(msg);
+      return this._sendMessageCB(msg);
     }
   }
 
@@ -517,3 +507,17 @@ const {IAnyFunc: checkerAnyFunc} = tic.createCheckers({IAnyFunc});
 const checkerAnyResult = checkerAnyFunc.methodResult("invoke");
 
 const anyChecker: tic.Checker = checkerAnyResult;
+
+/**
+ * A little helper that processes message queues when starting an rpc instance.
+ */
+function processQueue(queue: IMessage[], processFunc: (msg: IMessage) => void) {
+  let i = 0;
+  try {
+    for (; i < queue.length; ++i) {
+      processFunc(queue[i]);
+    }
+  } finally {
+    queue.splice(0, i);
+  }
+}

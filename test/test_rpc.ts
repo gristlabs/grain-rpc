@@ -288,6 +288,39 @@ describe("Rpc", () => {
 
   });
 
+  it("should behave nicely if `start()` throws", async () => {
+    const rpc = new Rpc(defaults);
+
+    // 3 messages are sent while inactive
+    rpc.postMessage("x");
+    rpc.postMessage("y");
+    rpc.postMessage("z");
+
+    let e = "";
+    const stub = sinon.stub();
+    stub.withArgs("y").throws("y throws"); // the 2 message will throw
+
+    // let's start rpc
+    try {
+      rpc.start((msg) => stub((msg as any).data));
+    } catch (_e) {
+      e = _e;
+    }
+
+    // checks that start did process 'x' and 'y' and throws
+    assert.equal(stub.callCount, 2);
+    assert.equal(stub.calledWith("x"), true);
+    assert.equal(stub.calledWith("y"), true);
+    assert.equal(e, "y throws");
+
+    const spy = sinon.spy();
+    rpc.start((msg) => spy((msg as any).data)); // let's start again
+
+    // check that `start()` resume sending message from where it was previously interrupted.
+    assert.equal(spy.calledWith("z"), true);
+
+  });
+
 });
 
 function createRpcPair(): [Rpc, Rpc] {
