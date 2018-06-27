@@ -134,19 +134,19 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    * even if receiveMessage() has already started being called.
    */
   public start(sendMessage: SendMessageCB) {
+    // Message sent by `_dispatch(...)` are appended to the send queue
+    processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
+    processQueue(this._inactiveSendQueue, sendMessage);
     this._sendMessageCB = sendMessage;
-    try {
-      // dispatch message received while inactive
-      while (this._inactiveRecvQueue.length) {
-        this._dispatch(this._inactiveRecvQueue.shift()!);
+    function processQueue(queue: IMessage[], processFunc: (msg: IMessage) => any) {
+      let i = 0;
+      try {
+        for (; i < queue.length; ++i) {
+          processFunc(queue[i]);
+        }
+      } finally {
+        queue.splice(0, i);
       }
-      // send messages sent while inactive
-      while (this._inactiveSendQueue.length) {
-        sendMessage(this._inactiveSendQueue.shift()!);
-      }
-    } catch {
-      // If an exception is thrown, lets propagate and leave state unchanged.
-      this._sendMessageCB = null;
     }
   }
 
