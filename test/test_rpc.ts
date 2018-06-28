@@ -3,7 +3,7 @@ import * as chaiAsPromised from "chai-as-promised";
 import {EventEmitter} from "events";
 import * as sinon from "sinon";
 import {createCheckers} from "ts-interface-checker";
-import {Rpc} from "../lib/rpc";
+import {MsgType, Rpc} from "../lib";
 import {ICalc} from "./ICalc";
 import ICalcTI from "./ICalc-ti";
 
@@ -292,33 +292,51 @@ describe("Rpc", () => {
     const rpc = new Rpc(defaults);
 
     // 3 messages are sent while inactive
-    rpc.postMessage("x");
-    rpc.postMessage("y");
-    rpc.postMessage("z");
+    const promises = [
+      rpc.postMessage("x"),
+      rpc.postMessage("y"),
+      rpc.postMessage("z"),
+      rpc.callRemoteFunc("f", 1),
+      rpc.callRemoteFunc("g", 2),
+    ];
 
-    let e = "";
-    const stub = sinon.stub();
-    stub.withArgs("y").throws("y throws"); // the 2 message will throw
+    const sendStub = sinon.stub();
+    sendStub.onCall(1).throws(new Error("y throws")); // the 2nd message will throw
 
     // let's start rpc
-    try {
-      rpc.start((msg) => stub((msg as any).data));
-    } catch (_e) {
-      e = _e;
+    assert.throws(() => rpc.start(sendStub), /y throws/);
+
+    function describeCall(sendCallArgs: any[]) {
+      const msg = sendCallArgs[0];
+      return msg.data || `${msg.iface}.${msg.meth}`;
     }
 
-    // checks that start did process 'x' and 'y' and throws
-    assert.equal(stub.callCount, 2);
-    assert.equal(stub.calledWith("x"), true);
-    assert.equal(stub.calledWith("y"), true);
-    assert.equal(e, "y throws");
+    // checks that start did process 'x' and 'y'.
+    assert.deepEqual(sendStub.args.map(describeCall), ["x", "y"]);
+    await promises[0];
+    await promises[1];    // postMessage() calls don't currently throw when queued.
 
-    const spy = sinon.spy();
-    rpc.start((msg) => spy((msg as any).data)); // let's start again
+    // let's start again.
+    sendStub.reset();
+    sendStub.onCall(1).throws(new Error("f throws")); // the 2nd message (calling "f") will throw
+    assert.throws(() => rpc.start(sendStub), /f throws/);
 
     // check that `start()` resume sending message from where it was previously interrupted.
-    assert.equal(spy.calledWith("z"), true);
+    // Ensure that "y" (which was attempted and failed) isn't tried again, but now "f" fails.
+    assert.deepEqual(sendStub.args.map(describeCall), ["z", "f.invoke"]);
+    await promises[2];
+    await assert.isRejected(promises[3], /Send failed: f throws/);
 
+    // One last time to complete the queue and have start() succeed. This time we fake a response
+    // to get the call "g" to succeed.
+    sendStub.reset();
+    sendStub.onCall(0).callsFake((msg) =>
+      rpc.receiveMessage({mtype: MsgType.RpcRespData, reqId: msg.reqId, data: "hello"}));
+    rpc.start(sendStub);
+
+    // Ensure that our sendStub got called, and that the full call to "g" succeeds.
+    assert.deepEqual(sendStub.args.map(describeCall), ["g.invoke"]);
+    assert.equal(await promises[4], "hello");
   });
 
 });

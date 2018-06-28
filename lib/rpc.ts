@@ -76,7 +76,7 @@ import {EventEmitter} from "events";
 import * as tic from "ts-interface-checker";
 import {IMessage, IMsgCustom, IMsgRpcCall, IMsgRpcRespData, IMsgRpcRespErr, MsgType} from "./message";
 
-export type SendMessageCB = (msg: IMessage) => PromiseLike<void> | void;
+export type SendMessageCB = (msg: IMessage) => Promise<void> | void;
 
 interface IForwardingName {
   forwarder: string;
@@ -120,7 +120,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   /**
    * To use Rpc, call this for every message received from the other side of the channel.
    */
-  public receiveMessage(msg: any): void {
+  public receiveMessage(msg: IMessage): void {
     if (!this._sendMessageCB) {
       this._inactiveRecvQueue.push(msg);
     } else {
@@ -135,8 +135,8 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    */
   public start(sendMessage: SendMessageCB) {
     // Message sent by `_dispatch(...)` are appended to the send queue
+    processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, sendMessage));
     processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
-    processQueue(this._inactiveSendQueue, sendMessage);
     this._sendMessageCB = sendMessage;
   }
 
@@ -291,12 +291,39 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     return this.postMessageForward(msg.mdest || "", msg.data);
   }
 
-  private _sendMessage(msg: IMessage): PromiseLike<void> | void {
+  private _sendMessage(msg: IMessage): Promise<void> | void {
     if (!this._sendMessageCB) {
       this._inactiveSendQueue.push(msg);
     } else {
-      return this._sendMessageCB(msg);
+      this._sendMessageOrReject(this._sendMessageCB, msg);
     }
+  }
+
+  // This helper calls calls sendMessage(msg), and if that call fails, rejects the call
+  // represented by msg (when it's of type RpcCall).
+  private _sendMessageOrReject(sendMessage: SendMessageCB, msg: IMessage): Promise<void> | void {
+    // It's a bit tricky to handle errors both synchronously or not, since we allow for
+    // sendMessage() to work either way. At least some tests assume synchronous operation.
+    try {
+      const maybePromise = sendMessage(msg);
+      if (maybePromise) {
+        return maybePromise.catch((err) => this._callReject(msg, err));
+      }
+    } catch (err) {
+      this._callReject(msg, err);
+    }
+
+  }
+
+  private _callReject(msg: IMessage, err: Error) {
+    if (msg.mtype === MsgType.RpcCall && msg.reqId !== undefined) {
+      const callObj = this._pendingCalls.get(msg.reqId);
+      if (callObj) {
+        this._pendingCalls.delete(msg.reqId);
+        callObj.reject(new ErrorWithCode("RPC_SEND_FAILED", `Send failed: ${err.message}`));
+      }
+    }
+    throw err;
   }
 
   private _makeCallRaw(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
@@ -311,10 +338,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
       this._info(callObj, "RPC_CALLING");
       const msg: IMsgRpcCall = {mtype: MsgType.RpcCall, reqId, iface, meth, args};
       if (fwdDest) { msg.mdest = fwdDest; }
-      Promise.resolve().then(() => this._sendMessage(msg)).catch((err) => {
-        this._pendingCalls.delete(reqId);
-        reject(err);
-      });
+      return this._sendMessage(msg);
     });
   }
 
@@ -514,8 +538,10 @@ const anyChecker: tic.Checker = checkerAnyResult;
 function processQueue(queue: IMessage[], processFunc: (msg: IMessage) => void) {
   let i = 0;
   try {
-    for (; i < queue.length; ++i) {
-      processFunc(queue[i]);
+    while (i < queue.length) {
+      // i gets read and then incremented before the call, so that if processFunc throws, the
+      // message still gets removed from the queue (to avoid processing it twice).
+      processFunc(queue[i++]);
     }
   } finally {
     queue.splice(0, i);
