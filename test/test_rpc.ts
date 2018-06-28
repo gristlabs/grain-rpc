@@ -339,6 +339,25 @@ describe("Rpc", () => {
     assert.equal(await promises[4], "hello");
   });
 
+  it("should fail calls due to error in send", async () => {
+    const sendStub = sinon.stub();
+    const rpc = new Rpc(defaults);
+    rpc.start(sendStub);
+
+    sendStub.throws(new Error("err1"));
+    await assert.isRejected(rpc.postMessage("x"), /Send failed: err1/);
+
+    sendStub.throws(new Error("err2"));
+    await assert.isRejected(rpc.callRemoteFunc("greet", "Bob"), /Send failed: err2/);
+
+    sendStub.returns(Promise.reject(new Error("err3")));
+    await assert.isRejected(rpc.callRemoteFunc("greet", "Bob"), /Send failed: err3/);
+
+    sendStub.callsFake((msg) =>
+      rpc.receiveMessage({mtype: MsgType.RpcRespData, reqId: msg.reqId, data: "hello"}));
+    assert.equal(await rpc.callRemoteFunc("greet", "Alice"), "hello");
+  });
+
 });
 
 function createRpcPair(): [Rpc, Rpc] {

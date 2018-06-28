@@ -295,7 +295,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     if (!this._sendMessageCB) {
       this._inactiveSendQueue.push(msg);
     } else {
-      this._sendMessageOrReject(this._sendMessageCB, msg);
+      return this._sendMessageOrReject(this._sendMessageCB, msg);
     }
   }
 
@@ -307,23 +307,25 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     try {
       const maybePromise = sendMessage(msg);
       if (maybePromise) {
-        return maybePromise.catch((err) => this._callReject(msg, err));
+        return maybePromise.catch((err) => this._sendReject(msg, err));
       }
     } catch (err) {
-      this._callReject(msg, err);
+      this._sendReject(msg, err);
     }
 
   }
 
-  private _callReject(msg: IMessage, err: Error) {
+  // Rejects a RpcCall due to the given send error; this helper always re-thrwos.
+  private _sendReject(msg: IMessage, err: Error) {
+    const newErr = new ErrorWithCode("RPC_SEND_FAILED", `Send failed: ${err.message}`);
     if (msg.mtype === MsgType.RpcCall && msg.reqId !== undefined) {
       const callObj = this._pendingCalls.get(msg.reqId);
       if (callObj) {
         this._pendingCalls.delete(msg.reqId);
-        callObj.reject(new ErrorWithCode("RPC_SEND_FAILED", `Send failed: ${err.message}`));
+        callObj.reject(newErr);
       }
     }
-    throw err;
+    throw newErr;
   }
 
   private _makeCallRaw(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
@@ -338,7 +340,10 @@ export class Rpc extends EventEmitter implements IForwarderDest {
       this._info(callObj, "RPC_CALLING");
       const msg: IMsgRpcCall = {mtype: MsgType.RpcCall, reqId, iface, meth, args};
       if (fwdDest) { msg.mdest = fwdDest; }
-      return this._sendMessage(msg);
+
+      // If _sendMessage fails, reject, but allow it to return void.
+      const p = this._sendMessage(msg);
+      if (p) { p.catch(reject); }
     });
   }
 
