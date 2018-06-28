@@ -302,17 +302,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   // This helper calls calls sendMessage(msg), and if that call fails, rejects the call
   // represented by msg (when it's of type RpcCall).
   private _sendMessageOrReject(sendMessage: SendMessageCB, msg: IMessage): Promise<void> | void {
-    // It's a bit tricky to handle errors both synchronously or not, since we allow for
-    // sendMessage() to work either way. At least some tests assume synchronous operation.
-    try {
-      const maybePromise = sendMessage(msg);
-      if (maybePromise) {
-        return maybePromise.catch((err) => this._sendReject(msg, err));
-      }
-    } catch (err) {
-      this._sendReject(msg, err);
-    }
-
+    return catchMaybePromise(() => sendMessage(msg), (err) => this._sendReject(msg, err));
   }
 
   // Rejects a RpcCall due to the given send error; this helper always re-thrwos.
@@ -341,9 +331,8 @@ export class Rpc extends EventEmitter implements IForwarderDest {
       const msg: IMsgRpcCall = {mtype: MsgType.RpcCall, reqId, iface, meth, args};
       if (fwdDest) { msg.mdest = fwdDest; }
 
-      // If _sendMessage fails, reject, but allow it to return void.
-      const p = this._sendMessage(msg);
-      if (p) { p.catch(reject); }
+      // If _sendMessage fails, reject, allowing it to throw synchronously or not.
+      catchMaybePromise(() => this._sendMessage(msg), reject);
     });
   }
 
@@ -550,5 +539,22 @@ function processQueue(queue: IMessage[], processFunc: (msg: IMessage) => void) {
     }
   } finally {
     queue.splice(0, i);
+  }
+}
+
+type MaybePromise = Promise<void> | void;
+
+/**
+ * Calls callback(), handling the exception both synchronously and not. If callback and handler
+ * both return or throw synchronously, then so does this method.
+ */
+function catchMaybePromise(callback: () => MaybePromise, handler: (err: Error) => MaybePromise): MaybePromise {
+  try {
+    const p = callback();
+    if (p) {
+      return p.catch(handler);
+    }
+  } catch (err) {
+    return handler(err);
   }
 }
