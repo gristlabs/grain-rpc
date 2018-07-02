@@ -132,12 +132,20 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    * Until start() is called, received and sent messages are queued. This gives you an opportunity
    * to register implementations and add "message" listeners without the risk of missing messages,
    * even if receiveMessage() has already started being called.
+   *
+   * If sendMessage throws a synchronous exception while processing queued messages, then start()
+   * throws as well, and Rpc is stopped again.
    */
   public start(sendMessage: SendMessageCB) {
     // Message sent by `_dispatch(...)` are appended to the send queue
-    processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, sendMessage));
-    processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
     this._sendMessageCB = sendMessage;
+    try {
+      processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
+      processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, sendMessage));
+    } catch (e) {
+      this._sendMessageCB = null;
+      throw e;
+    }
   }
 
   /**
@@ -302,10 +310,14 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   // This helper calls calls sendMessage(msg), and if that call fails, rejects the call
   // represented by msg (when it's of type RpcCall).
   private _sendMessageOrReject(sendMessage: SendMessageCB, msg: IMessage): Promise<void> | void {
+    if (this._logger.info) {
+      const desc = (msg.mtype === MsgType.RpcCall) ? ": " + this._callDesc(msg) : "";
+      this._logger.info(`Rpc sending ${MsgType[msg.mtype]}${desc}`);
+    }
     return catchMaybePromise(() => sendMessage(msg), (err) => this._sendReject(msg, err));
   }
 
-  // Rejects a RpcCall due to the given send error; this helper always re-thrwos.
+  // Rejects a RpcCall due to the given send error; this helper always re-throws.
   private _sendReject(msg: IMessage, err: Error) {
     const newErr = new ErrorWithCode("RPC_SEND_FAILED", `Send failed: ${err.message}`);
     if (msg.mtype === MsgType.RpcCall && msg.reqId !== undefined) {
