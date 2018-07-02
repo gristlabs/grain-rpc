@@ -76,7 +76,7 @@ import {EventEmitter} from "events";
 import * as tic from "ts-interface-checker";
 import {IMessage, IMsgCustom, IMsgRpcCall, IMsgRpcRespData, IMsgRpcRespErr, MsgType} from "./message";
 
-export type SendMessageCB = (msg: IMessage) => PromiseLike<void> | void;
+export type SendMessageCB = (msg: IMessage) => Promise<void> | void;
 
 interface IForwardingName {
   forwarder: string;
@@ -120,7 +120,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   /**
    * To use Rpc, call this for every message received from the other side of the channel.
    */
-  public receiveMessage(msg: any): void {
+  public receiveMessage(msg: IMessage): void {
     if (!this._sendMessageCB) {
       this._inactiveRecvQueue.push(msg);
     } else {
@@ -132,12 +132,22 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    * Until start() is called, received and sent messages are queued. This gives you an opportunity
    * to register implementations and add "message" listeners without the risk of missing messages,
    * even if receiveMessage() has already started being called.
+   *
+   * If sendMessage throws a synchronous exception while processing queued messages, then start()
+   * throws as well, and Rpc remains stopped.
    */
   public start(sendMessage: SendMessageCB) {
     // Message sent by `_dispatch(...)` are appended to the send queue
     processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
-    processQueue(this._inactiveSendQueue, sendMessage);
+    // If send triggers a receive, that would be queued and never processed unless we set
+    // sendMessage now. We reset it on exception.
     this._sendMessageCB = sendMessage;
+    try {
+      processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, sendMessage));
+    } catch (e) {
+      this._sendMessageCB = null;
+      throw e;
+    }
   }
 
   /**
@@ -291,12 +301,35 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     return this.postMessageForward(msg.mdest || "", msg.data);
   }
 
-  private _sendMessage(msg: IMessage): PromiseLike<void> | void {
+  private _sendMessage(msg: IMessage): Promise<void> | void {
     if (!this._sendMessageCB) {
       this._inactiveSendQueue.push(msg);
     } else {
-      return this._sendMessageCB(msg);
+      return this._sendMessageOrReject(this._sendMessageCB, msg);
     }
+  }
+
+  // This helper calls calls sendMessage(msg), and if that call fails, rejects the call
+  // represented by msg (when it's of type RpcCall).
+  private _sendMessageOrReject(sendMessage: SendMessageCB, msg: IMessage): Promise<void> | void {
+    if (this._logger.info) {
+      const desc = (msg.mtype === MsgType.RpcCall) ? ": " + this._callDesc(msg) : "";
+      this._logger.info(`Rpc sending ${MsgType[msg.mtype]}${desc}`);
+    }
+    return catchMaybePromise(() => sendMessage(msg), (err) => this._sendReject(msg, err));
+  }
+
+  // Rejects a RpcCall due to the given send error; this helper always re-throws.
+  private _sendReject(msg: IMessage, err: Error) {
+    const newErr = new ErrorWithCode("RPC_SEND_FAILED", `Send failed: ${err.message}`);
+    if (msg.mtype === MsgType.RpcCall && msg.reqId !== undefined) {
+      const callObj = this._pendingCalls.get(msg.reqId);
+      if (callObj) {
+        this._pendingCalls.delete(msg.reqId);
+        callObj.reject(newErr);
+      }
+    }
+    throw newErr;
   }
 
   private _makeCallRaw(iface: string, meth: string, args: any[], resultChecker: tic.Checker,
@@ -311,10 +344,9 @@ export class Rpc extends EventEmitter implements IForwarderDest {
       this._info(callObj, "RPC_CALLING");
       const msg: IMsgRpcCall = {mtype: MsgType.RpcCall, reqId, iface, meth, args};
       if (fwdDest) { msg.mdest = fwdDest; }
-      Promise.resolve().then(() => this._sendMessage(msg)).catch((err) => {
-        this._pendingCalls.delete(reqId);
-        reject(err);
-      });
+
+      // If _sendMessage fails, reject, allowing it to throw synchronously or not.
+      catchMaybePromise(() => this._sendMessage(msg), reject);
     });
   }
 
@@ -514,10 +546,29 @@ const anyChecker: tic.Checker = checkerAnyResult;
 function processQueue(queue: IMessage[], processFunc: (msg: IMessage) => void) {
   let i = 0;
   try {
-    for (; i < queue.length; ++i) {
-      processFunc(queue[i]);
+    while (i < queue.length) {
+      // i gets read and then incremented before the call, so that if processFunc throws, the
+      // message still gets removed from the queue (to avoid processing it twice).
+      processFunc(queue[i++]);
     }
   } finally {
     queue.splice(0, i);
+  }
+}
+
+type MaybePromise = Promise<void> | void;
+
+/**
+ * Calls callback(), handling the exception both synchronously and not. If callback and handler
+ * both return or throw synchronously, then so does this method.
+ */
+function catchMaybePromise(callback: () => MaybePromise, handler: (err: Error) => MaybePromise): MaybePromise {
+  try {
+    const p = callback();
+    if (p) {
+      return p.catch(handler);
+    }
+  } catch (err) {
+    return handler(err);
   }
 }
