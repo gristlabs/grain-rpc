@@ -134,13 +134,15 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    * even if receiveMessage() has already started being called.
    *
    * If sendMessage throws a synchronous exception while processing queued messages, then start()
-   * throws as well, and Rpc is stopped again.
+   * throws as well, and Rpc remains stopped.
    */
   public start(sendMessage: SendMessageCB) {
     // Message sent by `_dispatch(...)` are appended to the send queue
+    processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
+    // If send triggers a receive, that would be queued and never processed unless we set
+    // sendMessage now. We reset it on exception.
     this._sendMessageCB = sendMessage;
     try {
-      processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
       processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, sendMessage));
     } catch (e) {
       this._sendMessageCB = null;
