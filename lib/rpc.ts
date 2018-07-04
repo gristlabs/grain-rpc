@@ -93,9 +93,11 @@ export type ICallWrapper = (callFunc: () => Promise<any>) => Promise<any>;
 const plainCall: ICallWrapper = (callFunc) => callFunc();
 
 export class Rpc extends EventEmitter implements IForwarderDest {
-  private _sendMessageCB: SendMessageCB | null;
-  private _inactiveRecvQueue: IMessage[] = []; // queue of received message
-  private _inactiveSendQueue: IMessage[] = []; // queue of messages to be sent
+  // Note the invariant: _inactiveSendQueue == null iff (_sendMessageCB != null && !_waitForReadyMessage)
+  private _sendMessageCB: SendMessageCB|null = null;
+  private _inactiveRecvQueue: IMessage[]|null = null;  // queue of received message
+  private _inactiveSendQueue: IMessage[]|null = null;  // queue of messages to be sent
+  private _waitForReadyMessage = false;
   private _logger: IRpcLogger;
   private _callWrapper: ICallWrapper;
   private _implMap: Map<string, Implementation> = new Map();
@@ -104,24 +106,24 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   private _nextRequestId = 1;
 
   /**
-   * To use Rpc, you must call start() with a function that sends a message to the other side. If
-   * you pass in such a function to the constructor, it's the same as calling start() right away.
-   * You must also call receiveMessage() for every message received from the other side.
+   * To use Rpc, you must provide a sendMessage function that sends a message to the other side;
+   * it may be given in the constructor, or later with setSendMessage. You must also call
+   * receiveMessage() for every message received from the other side.
    */
   constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB,
                         callWrapper?: ICallWrapper} = {}) {
     super();
     const {logger = console, sendMessage = null, callWrapper = plainCall} = options;
     this._logger = logger;
-    this._sendMessageCB = sendMessage;
     this._callWrapper = callWrapper;
+    this.setSendMessage(sendMessage);
   }
 
   /**
    * To use Rpc, call this for every message received from the other side of the channel.
    */
   public receiveMessage(msg: IMessage): void {
-    if (!this._sendMessageCB) {
+    if (this._inactiveRecvQueue) {
       this._inactiveRecvQueue.push(msg);
     } else {
       this._dispatch(msg);
@@ -129,33 +131,57 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   }
 
   /**
-   * Until start() is called, received and sent messages are queued. This gives you an opportunity
-   * to register implementations and add "message" listeners without the risk of missing messages,
-   * even if receiveMessage() has already started being called.
-   *
-   * If sendMessage throws a synchronous exception while processing queued messages, then start()
-   * throws as well, and Rpc remains stopped.
+   * If you've set up calls to receiveMessage(), but need time to call registerImpl() before
+   * processing new messages, you may use queueIncoming(), make the registerImpl() calls,
+   * and then call processIncoming() to handle queued messages and resume normal processing.
    */
-  public start(sendMessage: SendMessageCB) {
-    // Message sent by `_dispatch(...)` are appended to the send queue
-    processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
-    // If send triggers a receive, that would be queued and never processed unless we set
-    // sendMessage now. We reset it on exception.
-    this._sendMessageCB = sendMessage;
-    try {
-      processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, sendMessage));
-    } catch (e) {
-      this._sendMessageCB = null;
-      throw e;
+  public queueIncoming() {
+    if (!this._inactiveRecvQueue) {
+      this._inactiveRecvQueue = [];
     }
   }
 
   /**
-   * Calling stop() resume the same state as before start was called: received and sent messages are
-   * queued.
+   * Process received messages queued since queueIncoming, and resume normal processing of
+   * received messages.
    */
-  public stop() {
-    this._sendMessageCB = null;
+  public processIncoming() {
+    if (this._inactiveRecvQueue) {
+      processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
+      this._inactiveRecvQueue = null;
+    }
+  }
+
+  /**
+   * Set the callback to send messages. If set to null, sent messages will be queued. If you
+   * disconnect and want for sent messages to throw, set a callback that throws.
+   */
+  public setSendMessage(sendMessage: SendMessageCB|null) {
+    this._sendMessageCB = sendMessage;
+    if (this._sendMessageCB) {
+      this._processOutgoing();
+    } else {
+      this._queueOutgoing();
+    }
+  }
+
+  /**
+   * If your peer may not be listening yet to your messages, you may call this to queue outgoing
+   * messages until receiving a "ready" message from the peer. I.e. one peer may call
+   * queueOutgoingUntilReadyMessage() while the other calls sendReadyMessage().
+   */
+  public queueOutgoingUntilReadyMessage() {
+    this._waitForReadyMessage = true;
+    this._queueOutgoing();
+  }
+
+  /**
+   * If your peer is using queueOutgoingUntilReadyMessage(), you should let it know that you are
+   * ready using sendReadyMessage() as soon as you've set up the processing of received messages.
+   * Note that at most one peer may use queueOutgoingUntilReadyMessage(), or they will deadlock.
+   */
+  public sendReadyMessage() {
+    return this._sendMessage({mtype: MsgType.Ready});
   }
 
   /**
@@ -301,11 +327,27 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     return this.postMessageForward(msg.mdest || "", msg.data);
   }
 
+  // Mark outgoing messages for queueing.
+  private _queueOutgoing() {
+    if (!this._inactiveSendQueue) {
+      this._inactiveSendQueue = [];
+    }
+  }
+
+  // If sendMessageCB is set and we are no longer waiting for a ready message, send out any
+  // queued outgoing messages and resume normal sending.
+  private _processOutgoing() {
+    if (this._inactiveSendQueue && this._sendMessageCB && !this._waitForReadyMessage) {
+      processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, this._sendMessageCB));
+      this._inactiveSendQueue = null;
+    }
+  }
+
   private _sendMessage(msg: IMessage): Promise<void> | void {
-    if (!this._sendMessageCB) {
+    if (this._inactiveSendQueue) {
       this._inactiveSendQueue.push(msg);
     } else {
-      return this._sendMessageOrReject(this._sendMessageCB, msg);
+      return this._sendMessageOrReject(this._sendMessageCB!, msg);
     }
   }
 
@@ -361,6 +403,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
       case MsgType.RpcRespData:
       case MsgType.RpcRespErr: { this._onMessageResp(msg); return; }
       case MsgType.Custom: { this._onCustomMessage(msg); return; }
+      case MsgType.Ready: { this._waitForReadyMessage = false; this._processOutgoing(); return; }
     }
   }
 
