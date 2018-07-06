@@ -159,12 +159,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   public setSendMessage(sendMessage: SendMessageCB|null) {
     this._sendMessageCB = sendMessage;
     if (this._sendMessageCB) {
-      try {
-        this._processOutgoing();
-      } catch (e) {
-        this.emit("error", e);
-        throw e;
-      }
+      this._processOutgoing();
     } else {
       this._queueOutgoing();
     }
@@ -376,6 +371,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
         callObj.reject(newErr);
       }
     }
+    this.emit("error", newErr);
     throw newErr;
   }
 
@@ -410,9 +406,8 @@ export class Rpc extends EventEmitter implements IForwarderDest {
       case MsgType.Custom: { this._onCustomMessage(msg); return; }
       case MsgType.Ready: {
         this._waitForReadyMessage = false;
-        try { this._processOutgoing(); } catch (e) { this.emit("error", e); }
+        try { this._processOutgoing(); } catch (e) { /* swallowing error, an event 'error' was already emitted */ }
         return;
-
       }
     }
   }
