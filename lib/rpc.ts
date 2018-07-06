@@ -162,15 +162,25 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     sendMessage({mtype: MsgType.Ready});
   }
 
+  /**
+   * Calling stop() invalidated the provided communication channel and resume the same state as
+   * before start() was called: received and sent messages are queued. Stop must be called when
+   * communication is lost until calling start() again with new callbacks.
+   */
   public stop() {
     this._sendMessageCB = null;
     this._deferReceive = true;
     this._deferSending = true;
   }
 
+  /**
+   * Calling readyToReceive first processs all the messages that have been received and
+   * queued. Future messages will be processed when received.
+   */
   public readyToReceive(): void {
-    this._deferReceive = false;
     processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
+    // Keep queuing received messages until we finish processing the queue, then set the flag to true.
+    this._deferReceive = false;
   }
 
   /**
@@ -441,7 +451,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   private _onReadyMessage(): void {
     this._deferSending = false;
     try {
-      processQueue(this._inactiveSendQueue, this._sendMessageCB!.bind(this));
+      processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, this._sendMessageCB!));
     } catch (e) {
       this.stop();
       this.emit("sendingQueueError", e);
