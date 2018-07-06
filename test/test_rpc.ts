@@ -358,6 +358,40 @@ describe("Rpc", () => {
     assert.equal(await rpc.callRemoteFunc("greet", "Alice"), "hello");
   });
 
+  it("queueIncoming() should queue messages until processIncoming()", async () => {
+    const [aRpc, bRpc] = createRpcPair();
+    const spy = sinon.spy();
+
+    aRpc.queueIncoming();
+    aRpc.on("message", spy);
+
+    bRpc.postMessage("x");
+    // "x" is not processed
+    assert.equal(spy.callCount, 0);
+    aRpc.processIncoming();
+    // "x" is processed
+    assert.equal(spy.callCount, 1);
+    assert.equal(spy.calledWith("x"), true);
+  });
+
+  it("deferSendUntilReadyReceived should queue messages until ready message received", async () => {
+    const aRpc: Rpc = new Rpc({...defaults, sendMessage: (msg) => bRpc.receiveMessage(msg)});
+    const bRpc: Rpc = new Rpc(defaults);
+    bRpc.queueOutgoingUntilReadyMessage();
+
+    const spy = sinon.spy();
+    aRpc.on("message", spy);
+    bRpc.postMessage("x");
+
+    // setting send message callback does not process outgoing
+    bRpc.setSendMessage((msg) => aRpc.receiveMessage(msg));
+    assert.equal(spy.callCount, 0);
+
+    // queued messages are processed on sendReadyMessage()
+    aRpc.sendReadyMessage();
+    assert.equal(spy.callCount, 1);
+  });
+
 });
 
 function createRpcPair(): [Rpc, Rpc] {
