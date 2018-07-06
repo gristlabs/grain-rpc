@@ -4,7 +4,7 @@
  * The user must provide the messaging between two endpoints, and in return gets the ability to
  * register interfaces or functions at either endpoint, and call them from the other side. For
  * messaging, the user must supply a sendMessage() function to send messages to the other side,
- * and must call rpc.receiveMessage(msg) whenever a message is received.
+ * and get a receiver with setReceiver((receiver) => void)) to handle received messages.
  *
  * E.g.
  *    rpc.registerImpl<MyInterface>("some-name", new MyInterfaceImpl(), descMyInterfaceImpl);
@@ -88,13 +88,18 @@ export interface IForwarderDest {
   forwardMessage: (msg: IMsgCustom) => Promise<any>;
 }
 
+export interface IChannel {
+  sendMessage: SendMessageCB;
+  setReceiver(receiver: (msg: IMessage) => void): void;
+}
+
 export type ICallWrapper = (callFunc: () => Promise<any>) => Promise<any>;
 
 const plainCall: ICallWrapper = (callFunc) => callFunc();
 
 export class Rpc extends EventEmitter implements IForwarderDest {
-  private _sendMessageCB: SendMessageCB | null;
-  private _inactiveRecvQueue: IMessage[] = []; // queue of received message
+  private _sendMessageCB: SendMessageCB | null = null;
+  private _inactiveRecvQueue: IMessage[] = []; // queue of received messages
   private _inactiveSendQueue: IMessage[] = []; // queue of messages to be sent
   private _logger: IRpcLogger;
   private _callWrapper: ICallWrapper;
@@ -102,60 +107,79 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   private _forwarders: Map<string, ImplementationFwd> = new Map();
   private _pendingCalls: Map<number, ICallObj> = new Map();
   private _nextRequestId = 1;
+  private _deferReceive: boolean = false;
+  private _deferSending: boolean = false;
 
   /**
-   * To use Rpc, you must call start() with a function that sends a message to the other side. If
-   * you pass in such a function to the constructor, it's the same as calling start() right away.
-   * You must also call receiveMessage() for every message received from the other side.
+   * To use Rpc, you must call start() with a channel providing messaging to the other side. If you
+   * pass in such a channel to the constructor, it's the same as calling start() right away.
    */
-  constructor(options: {logger?: IRpcLogger, sendMessage?: SendMessageCB,
-                        callWrapper?: ICallWrapper} = {}) {
+  constructor(options: {logger?: IRpcLogger, channel?: IChannel,
+              callWrapper?: ICallWrapper, deferReceive?: boolean, deferSendUntilReadyReceived?: boolean} = {}) {
     super();
-    const {logger = console, sendMessage = null, callWrapper = plainCall} = options;
+    const {logger = console, callWrapper = plainCall, channel} = options;
     this._logger = logger;
-    this._sendMessageCB = sendMessage;
+
+    if (channel) {
+      this.start(channel, options);
+    }
+
     this._callWrapper = callWrapper;
   }
 
   /**
-   * To use Rpc, call this for every message received from the other side of the channel.
-   */
-  public receiveMessage(msg: IMessage): void {
-    if (!this._sendMessageCB) {
-      this._inactiveRecvQueue.push(msg);
-    } else {
-      this._dispatch(msg);
-    }
-  }
-
-  /**
    * Until start() is called, received and sent messages are queued. This gives you an opportunity
-   * to register implementations and add "message" listeners without the risk of missing messages,
-   * even if receiveMessage() has already started being called.
-   *
-   * If sendMessage throws a synchronous exception while processing queued messages, then start()
-   * throws as well, and Rpc remains stopped.
+   * to register implementations and add "message" listeners without the risk of missing messages.
+   * It is possible to extend queueing of messages further by mean of the following flags:
+   * - deferReceive: queues received messages until `readyToReceive` is called. Useful when you're
+   *   not done setting up rpc just yet.
+   * - deferSendUntilReadyReceived: queues send messages until the ready messages is received. Useful
+   *   to avoid loosing messages because rpc is not yet listening on the other side.
+   * If channel.sendMessage throws a synchronous exception while processing queued messages, then rpc emit
+   * the 'errorSendingQueue` event and rpc is stopped.
    */
-  public start(sendMessage: SendMessageCB) {
-    // Message sent by `_dispatch(...)` are appended to the send queue
-    processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
-    // If send triggers a receive, that would be queued and never processed unless we set
-    // sendMessage now. We reset it on exception.
+  public start(channel: IChannel, options: {deferReceive?: boolean, deferSendUntilReadyReceived?: boolean} = {}) {
+
+    const {sendMessage, setReceiver} = channel;
+
+    setReceiver(this._dispatch.bind(this));
+
+    this._deferReceive = options.deferReceive || false;
+    this._deferSending = options.deferSendUntilReadyReceived || false;
+
+    if (!this._deferReceive) { processQueue(this._inactiveRecvQueue, this._dispatch.bind(this)); }
+
     this._sendMessageCB = sendMessage;
-    try {
-      processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, sendMessage));
-    } catch (e) {
-      this._sendMessageCB = null;
-      throw e;
+    if (!this._deferSending) {
+      try {
+        processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, sendMessage));
+      } catch (e) {
+        this.stop();
+        this.emit("errorSendingQueue", e);
+      }
     }
+
+    sendMessage({mtype: MsgType.Ready});
   }
 
   /**
-   * Calling stop() resume the same state as before start was called: received and sent messages are
-   * queued.
+   * Calling stop() invalidated the provided communication channel and resume the same state as
+   * before start() was called: received and sent messages are queued. Stop must be called when
+   * communication is lost until calling start() again with new callbacks.
    */
   public stop() {
     this._sendMessageCB = null;
+    this._deferReceive = true;
+    this._deferSending = true;
+  }
+
+  /**
+   * Calling readyToReceive first processs all the messages that have been received and
+   * queued. Future messages will be processed when received.
+   */
+  public readyToReceive(): void {
+    this._deferReceive = false;
+    processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
   }
 
   /**
@@ -174,7 +198,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    * in use. To skip all validation, use `registerImpl<any>(...)` and omit the last argument.
    * TODO Check that registerImpl without a type param requires a checker.
    */
-  public registerImpl<Iface extends any>(name: string, impl: any): void;
+  public registerImpl<Iface>(name: string, impl: any): void;
   public registerImpl<Iface>(name: string, impl: Iface, checker: tic.Checker): void;
   public registerImpl(name: string, impl: any, checker?: tic.Checker): void {
     if (this._implMap.has(name)) {
@@ -227,15 +251,14 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    *
    * Interface names can be followed by a "@<forwarder>" part
    */
-  public getStub<Iface extends any>(name: string): Iface;
-  public getStub<Iface>(name: string, checker: tic.Checker): Iface;
-  public getStub<Iface>(name: string, checker?: tic.Checker): Iface {
+   // todo: check typescript complies on grist before pulling.
+  public getStub<Iface>(name: string, checker?: tic.Checker): Iface;
+  public getStub(name: string, checker?: tic.Checker): any {
     const parts = this._parseName(name);
     return this.getStubForward(parts.forwarder, parts.name, checker!);
   }
 
-  public getStubForward<Iface extends any>(fwdDest: string, name: string): any;
-  public getStubForward<Iface>(fwdDest: string, name: string, checker: tic.Checker): Iface;
+  public getStubForward<Iface>(fwdDest: string, name: string, checker?: tic.Checker): Iface;
   public getStubForward(fwdDest: string, name: string, checker?: tic.Checker): any {
     if (!checker) {
       // TODO Test, then explain how this works.
@@ -302,7 +325,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   }
 
   private _sendMessage(msg: IMessage): Promise<void> | void {
-    if (!this._sendMessageCB) {
+    if (!this._sendMessageCB || this._deferSending) {
       this._inactiveSendQueue.push(msg);
     } else {
       return this._sendMessageOrReject(this._sendMessageCB, msg);
@@ -356,11 +379,15 @@ export class Rpc extends EventEmitter implements IForwarderDest {
   }
 
   private _dispatch(msg: IMessage): void {
+
+    if (this._deferReceive) { this._inactiveRecvQueue.push(msg); return; }
+
     switch (msg.mtype) {
       case MsgType.RpcCall: { this._onMessageCall(msg); return; }
       case MsgType.RpcRespData:
       case MsgType.RpcRespErr: { this._onMessageResp(msg); return; }
       case MsgType.Custom: { this._onCustomMessage(msg); return; }
+      case MsgType.Ready: { this._onReadyMessage(); return; }
     }
   }
 
@@ -418,6 +445,16 @@ export class Rpc extends EventEmitter implements IForwarderDest {
     }
     this._info(call, "RPC_ONCALL_OK");
     return this._sendResponse(call.reqId, result);
+  }
+
+  private _onReadyMessage(): void {
+    this._deferSending = false;
+    try {
+      processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, this._sendMessageCB!));
+    } catch (e) {
+      this.stop();
+      this.emit("errorSendingQueue", e);
+    }
   }
 
   private async _failCall(call: IMsgRpcCall, code: string, mesg: string, reportCode?: string): Promise<void> {

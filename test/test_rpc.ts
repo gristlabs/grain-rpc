@@ -3,13 +3,16 @@ import * as chaiAsPromised from "chai-as-promised";
 import {EventEmitter} from "events";
 import * as sinon from "sinon";
 import {createCheckers} from "ts-interface-checker";
-import {MsgType, Rpc} from "../lib";
+import {MsgType} from "../lib/message";
+import {IChannel, Rpc} from "../lib/rpc";
 import {ICalc} from "./ICalc";
 import ICalcTI from "./ICalc-ti";
 
 use(chaiAsPromised);
 
 const checkersForICalc = createCheckers(ICalcTI).ICalc;
+
+const noop = () => null;
 
 class Calc implements ICalc {
   public add(x: number, y: number): number {
@@ -37,8 +40,7 @@ describe("Rpc", () => {
   describe("basics", () => {
 
     it("should be able to make unchecked stubs and call methods", async () => {
-      const rpc = new Rpc(defaults);
-      rpc.start((msg) => rpc.receiveMessage(msg));
+      const rpc = new Rpc({... defaults, channel: crossover()});
       rpc.registerImpl<ICalc>("calc", new Calc());
       const stub = rpc.getStub<ICalc>("calc");
       assert(stub);
@@ -46,10 +48,7 @@ describe("Rpc", () => {
     });
 
     it("should support hello world without a checker", async () => {
-      const aRpc = new Rpc(defaults);
-      const bRpc = new Rpc(defaults);
-      aRpc.start((msg) => bRpc.receiveMessage(msg));
-      bRpc.start((msg) => aRpc.receiveMessage(msg));
+      const [aRpc, bRpc] = createRpcPair();
       aRpc.registerImpl("my-greeting", new MyGreeting());
       const stub = bRpc.getStub<IGreet>("my-greeting");
       assert.equal(await stub.getGreeting("World"), "Hello, World!");
@@ -60,8 +59,7 @@ describe("Rpc", () => {
   describe("getStub", () => {
 
     it("should be able to return safely from async methods", async () => {
-      const rpc = new Rpc(defaults);
-      rpc.start((msg) => rpc.receiveMessage(msg));
+      const rpc = new Rpc({... defaults, channel: crossover()});
       rpc.registerImpl<ICalc>("calc", new Calc());
       // Unchecked stubs will not return well from async methods if they look thenable
       // and javascript code results in a Promise.resolve.
@@ -74,8 +72,7 @@ describe("Rpc", () => {
     });
 
     it("should be able to pass through Promise.resolve", async () => {
-      const rpc = new Rpc(defaults);
-      rpc.start((msg) => rpc.receiveMessage(msg));
+      const rpc = new Rpc({... defaults, channel: crossover()});
       rpc.registerImpl<ICalc>("calc", new Calc());
       const stub = Promise.resolve(rpc.getStub<ICalc>("calc"));
       assert.equal(await stub.then((calc) => calc.add(4, 5)), 9);
@@ -86,8 +83,7 @@ describe("Rpc", () => {
   describe("checker", () => {
 
     it("should allow calling methods that exist", async () => {
-      const rpc = new Rpc(defaults);
-      rpc.start((msg) => rpc.receiveMessage(msg));
+      const rpc = new Rpc({... defaults, channel: crossover()});
       rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
       const stub = rpc.getStub<ICalc>("calc", checkersForICalc);
       assert.equal(await stub.add(4, 5), 9);
@@ -101,16 +97,14 @@ describe("Rpc", () => {
     });
 
     it("should catch missing methods at implementation for untyped stub", async () => {
-      const rpc = new Rpc(defaults);
-      rpc.start((msg) => rpc.receiveMessage(msg));
+      const rpc = new Rpc({... defaults, channel: crossover()});
       rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
       const stub = rpc.getStub<ICalc>("calc");
       await assert.isRejected((stub as any).additionify(4, 5), /Unknown method/);
     });
 
     it("should catch bad + missing arguments at implementation", async () => {
-      const rpc = new Rpc(defaults);
-      rpc.start((msg) => rpc.receiveMessage(msg));
+      const rpc = new Rpc({... defaults, channel: crossover()});
       rpc.registerImpl<ICalc>("calc", new Calc(), checkersForICalc);
       const stub = rpc.getStub<ICalc>("calc") as any;
       await assert.isRejected(stub.add("hello", 5), /not a number/);
@@ -235,7 +229,7 @@ describe("Rpc", () => {
   it("should support wrapping calls", async () => {
     const before = sinon.spy();
     const after = sinon.spy();
-    const rpc = new Rpc({...defaults, callWrapper: async (makeCall: () => Promise<any>) => {
+    const rpc = new Rpc({...defaults, channel: crossover(), callWrapper: async (makeCall: () => Promise<any>) => {
       before();
       try {
         return await makeCall();
@@ -243,7 +237,6 @@ describe("Rpc", () => {
         after();
       }
     }});
-    rpc.start(rpc.receiveMessage.bind(rpc));
     rpc.registerImpl<ICalc>("calc", new Calc());
     const stub = rpc.getStub<ICalc>("calc");
     assert(stub);
@@ -253,37 +246,32 @@ describe("Rpc", () => {
   });
 
   it("should support queueing messages when rpc is inactive", async () => {
+    let aRec: IRec = noop;
+    let bRec: IRec = noop;
     const aRpc = new Rpc(defaults);
-    const bRpc = new Rpc(defaults);
-    bRpc.start((msg) => aRpc.receiveMessage(msg));
+    const bRpc = new Rpc({...defaults, channel: {sendMessage: (msg) => aRec(msg), setReceiver: (r) => bRec = r}});
 
     aRpc.registerImpl<IGreet>("greet", new MyGreeting(" from a"));
     bRpc.registerImpl<IGreet>("greet", new MyGreeting(" from b"));
 
-    const bStub = bRpc.getStub<IGreet>("greet");
     const aStub = aRpc.getStub<IGreet>("greet");
 
-    assert(bStub);
     assert(aStub);
     let noneResolved = true;
-    let bGreeting = bStub.getGreeting("Santa").then((res) => (noneResolved = false, res));
     let aGreeting = aStub.getGreeting("Santa").then((res) => (noneResolved = false, res));
 
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(noneResolved, true);
-    aRpc.start((msg) => bRpc.receiveMessage(msg));
-    assert.equal(await bGreeting, "Hello, Santa! from a");
+    aRpc.start({sendMessage: (msg) => bRec(msg), setReceiver: (r) => aRec = r});
     assert.equal(await aGreeting, "Hello, Santa! from b");
 
     aRpc.stop();
     noneResolved = true;
-    bGreeting = bStub.getGreeting("Bob").then((res) => (noneResolved = false, res));
     aGreeting = aStub.getGreeting("Bob").then((res) => (noneResolved = false, res));
 
     await new Promise((resolve) => setTimeout(resolve, 100));
     assert.equal(noneResolved, true);
-    aRpc.start((msg) => bRpc.receiveMessage(msg));
-    assert.equal(await bGreeting, "Hello, Bob! from a");
+    aRpc.start({sendMessage: (msg) => bRec(msg), setReceiver: (r) => aRec = r});
     assert.equal(await aGreeting, "Hello, Bob! from b");
 
   });
@@ -291,7 +279,7 @@ describe("Rpc", () => {
   it("should behave nicely if `start()` throws", async () => {
     const rpc = new Rpc(defaults);
 
-    // 3 messages are sent while inactive
+    // messages are sent while inactive
     const promises = [
       rpc.postMessage("x"),
       rpc.postMessage("y"),
@@ -302,47 +290,55 @@ describe("Rpc", () => {
 
     const sendStub = sinon.stub();
     sendStub.onCall(1).throws(new Error("y throws")); // the 2nd message will throw
+    const errorSpy = sinon.spy();
+    rpc.on("errorSendingQueue", (e) => errorSpy(e.message));
 
     // let's start rpc
-    assert.throws(() => rpc.start(sendStub), /y throws/);
+    rpc.start({sendMessage: sendStub, setReceiver: noop});
+    assert.equal(errorSpy.calledWithMatch(/y throws/), true);
 
     function describeCall(sendCallArgs: any[]) {
       const msg = sendCallArgs[0];
+      if (msg.mtype === MsgType.Ready) { return "ready"; }
       return msg.data || `${msg.iface}.${msg.meth}`;
     }
 
     // checks that start did process 'x' and 'y'.
-    assert.deepEqual(sendStub.args.map(describeCall), ["x", "y"]);
+    assert.deepEqual(sendStub.args.map(describeCall), ["x", "y", "ready"]);
     await promises[0];
     await promises[1];    // postMessage() calls don't currently throw when queued.
 
     // let's start again.
     sendStub.reset();
     sendStub.onCall(1).throws(new Error("f throws")); // the 2nd message (calling "f") will throw
-    assert.throws(() => rpc.start(sendStub), /f throws/);
+    errorSpy.resetHistory();
+    rpc.start({sendMessage: sendStub, setReceiver: noop});
+    assert.equal(errorSpy.calledWithMatch(/f throws/), true);
 
     // check that `start()` resume sending message from where it was previously interrupted.
     // Ensure that "y" (which was attempted and failed) isn't tried again, but now "f" fails.
-    assert.deepEqual(sendStub.args.map(describeCall), ["z", "f.invoke"]);
+    assert.deepEqual(sendStub.args.map(describeCall), ["z", "f.invoke", "ready"]);
     await promises[2];
     await assert.isRejected(promises[3], /Send failed: f throws/);
 
     // One last time to complete the queue and have start() succeed. This time we fake a response
     // to get the call "g" to succeed.
     sendStub.reset();
+    let rec: IRec;
     sendStub.onCall(0).callsFake((msg) =>
-      rpc.receiveMessage({mtype: MsgType.RpcRespData, reqId: msg.reqId, data: "hello"}));
-    rpc.start(sendStub);
+      rec({mtype: MsgType.RpcRespData, reqId: msg.reqId, data: "hello"}));
+    rpc.start({sendMessage: sendStub, setReceiver: (r) => rec = r });
 
     // Ensure that our sendStub got called, and that the full call to "g" succeeds.
-    assert.deepEqual(sendStub.args.map(describeCall), ["g.invoke"]);
+    assert.deepEqual(sendStub.args.map(describeCall), ["g.invoke", "ready"]);
     assert.equal(await promises[4], "hello");
   });
 
   it("should fail calls due to error in send", async () => {
     const sendStub = sinon.stub();
     const rpc = new Rpc(defaults);
-    rpc.start(sendStub);
+    let rec: IRec = noop;
+    rpc.start({sendMessage: sendStub, setReceiver: (r) => rec = r});
 
     sendStub.throws(new Error("err1"));
     await assert.isRejected(rpc.postMessage("x"), /Send failed: err1/);
@@ -354,14 +350,56 @@ describe("Rpc", () => {
     await assert.isRejected(rpc.callRemoteFunc("greet", "Bob"), /Send failed: err3/);
 
     sendStub.callsFake((msg) =>
-      rpc.receiveMessage({mtype: MsgType.RpcRespData, reqId: msg.reqId, data: "hello"}));
+      rec({mtype: MsgType.RpcRespData, reqId: msg.reqId, data: "hello"}));
     assert.equal(await rpc.callRemoteFunc("greet", "Alice"), "hello");
+  });
+
+  it("deferReceive should queue messages until `readyToReceive()`", async () => {
+    let aRec: IRec = noop;
+    let bRec: IRec = noop;
+    const aRpc: Rpc = new Rpc({...defaults,
+      channel: {sendMessage: (msg) => bRec(msg), setReceiver: ((r) => aRec = r)}, deferReceive: true});
+    const bRpc: Rpc = new Rpc({ ...defaults,
+      channel: {sendMessage: (msg) => aRec(msg), setReceiver: ((r) => bRec = r)}});
+    const spy = sinon.spy();
+    aRpc.on("message", spy);
+    bRpc.postMessage("x");
+    assert.equal(spy.callCount, 0);
+    aRpc.readyToReceive();
+    assert.equal(spy.callCount, 1);
+  });
+
+  it("deferSendUntilReadyReceived should queue messages until ready message received", async () => {
+    let aRec: IRec = noop;
+    let bRec: IRec = noop;
+    const aRpc: Rpc = new Rpc(defaults);
+    const bRpc: Rpc = new Rpc({ ...defaults,
+      channel: {sendMessage: (msg) => aRec(msg), setReceiver: ((r) => bRec = r)}, deferSendUntilReadyReceived: true});
+
+    const spy = sinon.spy();
+    aRpc.on("message", spy);
+    bRpc.postMessage("x");
+
+    assert.equal(spy.callCount, 0);
+    aRpc.start({sendMessage: (msg) => bRec(msg), setReceiver: ((r) => aRec = r)});
+    assert.equal(spy.callCount, 1);
   });
 
 });
 
+// create a crossover channel
+function crossover(): IChannel {
+  let receiver: IRec;
+  return {setReceiver: ((r) => receiver = r), sendMessage: (msg) => receiver(msg)};
+}
+
 function createRpcPair(): [Rpc, Rpc] {
-  const aRpc: Rpc = new Rpc({logger: {}, sendMessage: (msg) => bRpc.receiveMessage(msg)});
-  const bRpc: Rpc = new Rpc({logger: {}, sendMessage: (msg) => aRpc.receiveMessage(msg)});
+  // todo;
+  let aRec: IRec = noop;
+  let bRec: IRec = noop;
+  const aRpc: Rpc = new Rpc({...defaults, channel: {sendMessage: (msg) => bRec(msg), setReceiver: ((r) => aRec = r)}});
+  const bRpc: Rpc = new Rpc({...defaults, channel: {sendMessage: (msg) => aRec(msg), setReceiver: ((r) => bRec = r)}});
   return [aRpc, bRpc];
 }
+
+type IRec = (msg: any) => void;
