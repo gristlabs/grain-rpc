@@ -12,6 +12,7 @@ export enum MsgType {
   RpcRespData = 2,
   RpcRespErr = 3,
   Custom = 4,       // Used for any non-RPC messages.
+  Ready = 5,
 }
 
 // Message describing an RPC call.
@@ -49,8 +50,12 @@ export interface IMsgCustom {
   data: any;
 }
 
+export interface IMsgReady {
+  mtype: MsgType.Ready;
+}
+
 // Type of all RPC messages.
 export type IMsgRpc = IMsgRpcCall | IMsgRpcRespData | IMsgRpcRespErr;
 
 // Type for any message that may be sent over an RpcChannel.
-export type IMessage = IMsgRpc | IMsgCustom;
+export type IMessage = IMsgRpc | IMsgCustom | IMsgReady;
