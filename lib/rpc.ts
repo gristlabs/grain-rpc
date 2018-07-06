@@ -178,9 +178,8 @@ export class Rpc extends EventEmitter implements IForwarderDest {
    * queued. Future messages will be processed when received.
    */
   public readyToReceive(): void {
-    processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
-    // Keep queuing received messages until we finish processing the queue, then set the flag to true.
     this._deferReceive = false;
+    processQueue(this._inactiveRecvQueue, this._dispatch.bind(this));
   }
 
   /**
@@ -454,7 +453,7 @@ export class Rpc extends EventEmitter implements IForwarderDest {
       processQueue(this._inactiveSendQueue, this._sendMessageOrReject.bind(this, this._sendMessageCB!));
     } catch (e) {
       this.stop();
-      this.emit("sendingQueueError", e);
+      this.emit("errorSendingQueue", e);
     }
   }
 
